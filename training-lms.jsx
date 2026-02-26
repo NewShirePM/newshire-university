@@ -48,7 +48,7 @@ const MSAL_CONFIG = {
 const SCOPES = ["Sites.ReadWrite.All", "User.Read", "Mail.Send"];
 
 let _msalInstance = null;
-const MSAL_CDN = "https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js";
+const MSAL_CDN = "https://unpkg.com/@azure/msal-browser@2.38.3/lib/msal-browser.min.js";
 
 async function loadMsalScript() {
   // If loaded via index.html <script> tag, it's already available
