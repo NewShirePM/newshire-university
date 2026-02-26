@@ -51,10 +51,21 @@ let _msalInstance = null;
 const MSAL_CDN = "https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js";
 
 async function loadMsalScript() {
+  // If loaded via index.html <script> tag, it's already available
   if (window.msal) return;
+  // Check if script tag exists but hasn't finished loading
+  const existing = document.querySelector(`script[src="${MSAL_CDN}"]`);
+  if (existing) {
+    return new Promise((resolve, reject) => {
+      if (window.msal) { resolve(); return; }
+      existing.addEventListener("load", () => window.msal ? resolve() : reject(new Error("MSAL loaded but not on window")));
+      existing.addEventListener("error", () => reject(new Error("Failed to load MSAL library from CDN")));
+      // Timeout fallback — script may have already loaded before listener attached
+      setTimeout(() => window.msal ? resolve() : null, 500);
+    });
+  }
+  // Dynamic injection fallback
   return new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src="${MSAL_CDN}"]`);
-    if (existing) { existing.addEventListener("load", resolve); return; }
     const s = document.createElement("script");
     s.src = MSAL_CDN;
     s.onload = resolve;
