@@ -179,9 +179,10 @@ function normalizeEmployees(items) {
 
 function normalizeCourses(items) {
   return items
-    .filter(item => item.fields.CourseActive !== false)
     .map(item => {
       const f = item.fields;
+      // Support legacy CourseActive boolean: if CourseStatus not set, derive from CourseActive
+      let status = f.CourseStatus || (f.CourseActive === false ? "Archived" : "Active");
       return {
         id: String(item.id),
         name: f.Title || "",
@@ -191,6 +192,7 @@ function normalizeCourses(items) {
         recertDays: f.RecertDays || null,
         passingScore: f.PassingScore || CONFIG.passingScore,
         sortOrder: f.SortOrder || 999,
+        status: status,
       };
     })
     .sort((a, b) => a.sortOrder - b.sortOrder);
@@ -2490,6 +2492,7 @@ function TrainingLibraryView({ user, completions, enrollments, onEnroll, onUnenr
   const myEnrollmentIds = enrollments.filter(e => e.employeeId === user.id).map(e => e.courseId);
 
   const filtered = courses.filter(c => {
+    if (c.status === "Archived") return false;
     if (filterCat !== "All" && c.category !== filterCat) return false;
     if (search && !c.name.toLowerCase().includes(search.toLowerCase()) && !c.description.toLowerCase().includes(search.toLowerCase())) return false;
     if (filterType === "Required" && !requiredCourseIds.includes(c.id)) return false;
@@ -2549,7 +2552,8 @@ function TrainingLibraryView({ user, completions, enrollments, onEnroll, onUnenr
                 key={course.id}
                 style={{
                   ...S.card, marginBottom: 0, transition: "box-shadow 0.2s, transform 0.15s",
-                  display: "flex", flexDirection: "column", justifyContent: "space-between"
+                  display: "flex", flexDirection: "column", justifyContent: "space-between",
+                  ...(course.status === "Coming Soon" ? { borderLeft: `3px solid ${C.gold500}` } : {})
                 }}
                 onMouseEnter={e => { e.currentTarget.style.boxShadow = "0 4px 12px rgba(28,55,64,0.10)"; e.currentTarget.style.transform = "translateY(-2px)"; }}
                 onMouseLeave={e => { e.currentTarget.style.boxShadow = "0 1px 3px rgba(28,55,64,0.06)"; e.currentTarget.style.transform = "translateY(0)"; }}
@@ -2558,8 +2562,10 @@ function TrainingLibraryView({ user, completions, enrollments, onEnroll, onUnenr
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                       <span style={S.badge("info")}>{course.category}</span>
+                      {course.status === "Coming Soon" && <span style={{ ...S.badge("warning"), background: "#FFF8E8", color: "#B8860B" }}>COMING SOON</span>}
                       {isRequired && <span style={S.badge("warning")}>REQUIRED</span>}
-                      {isEnrolled && <span style={{ ...S.badge("neutral"), color: C.teal400, background: C.teal50 }}>ENROLLED</span>}
+                      {isEnrolled && course.status !== "Coming Soon" && <span style={{ ...S.badge("neutral"), color: C.teal400, background: C.teal50 }}>ENROLLED</span>}
+                      {isEnrolled && course.status === "Coming Soon" && <span style={{ ...S.badge("neutral"), color: C.gold500, background: "#FFF8E8" }}>PRE-REGISTERED</span>}
                     </div>
                     {certStatus !== "incomplete" && (
                       <span style={S.badge(certStatus === "current" ? "success" : certStatus === "expired" ? "error" : "warning")}>
@@ -2568,29 +2574,58 @@ function TrainingLibraryView({ user, completions, enrollments, onEnroll, onUnenr
                     )}
                   </div>
                   <div
-                    onClick={() => setView({ type: "course", courseId: course.id })}
-                    style={{ cursor: "pointer" }}
+                    onClick={() => course.status !== "Coming Soon" && setView({ type: "course", courseId: course.id })}
+                    style={{ cursor: course.status === "Coming Soon" ? "default" : "pointer" }}
                   >
                     <div style={{ fontSize: 16, fontWeight: 600, color: C.teal700, marginBottom: 6 }}>{course.name}</div>
                     <div style={{ fontSize: 13, color: C.gray400, marginBottom: 12, lineHeight: 1.4 }}>{course.description}</div>
                   </div>
                 </div>
                 <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: C.gray400, borderTop: `1px solid ${C.gray100}`, paddingTop: 10, marginBottom: isVoluntaryAvailable || isEnrolled ? 10 : 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: C.gray400, borderTop: `1px solid ${C.gray100}`, paddingTop: 10, marginBottom: 10 }}>
                     <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Icons.Clock /> {course.durationMin} min</span>
                     <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Icons.Play /> {courseLessons.length} lessons</span>
                     {course.recertDays && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Icons.RefreshCw /> Annual</span>}
                   </div>
-                  {/* Enroll / Unenroll for non-required courses */}
-                  {isVoluntaryAvailable && (
+
+                  {/* Coming Soon — Pre-register / Already registered */}
+                  {course.status === "Coming Soon" && !isEnrolled && !isRequired && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onEnroll(user.id, course.id); }}
+                      style={{ ...S.btnSecondary, width: "100%", justifyContent: "center", fontSize: 13, padding: "8px 16px", borderColor: C.gold500, color: "#B8860B" }}
+                    >
+                      Pre-Register \u2014 Notify Me When Available
+                    </button>
+                  )}
+                  {course.status === "Coming Soon" && isEnrolled && !isRequired && (
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ flex: 1, textAlign: "center", fontSize: 13, color: C.gold500, padding: "8px 16px", background: "#FFF8E8", borderRadius: 4 }}>
+                        You'll be notified when this course goes live
+                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onUnenroll(user.id, course.id); }}
+                        style={{ ...S.btnSecondary, fontSize: 13, padding: "8px 12px", color: C.gray400 }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                  {course.status === "Coming Soon" && isRequired && (
+                    <div style={{ textAlign: "center", fontSize: 13, color: C.gold500, padding: "8px 16px", background: "#FFF8E8", borderRadius: 4 }}>
+                      Required \u2014 You'll be notified when this course is ready
+                    </div>
+                  )}
+
+                  {/* Active courses — normal enrollment/start buttons */}
+                  {course.status !== "Coming Soon" && isVoluntaryAvailable && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onEnroll(user.id, course.id); }}
                       style={{ ...S.btnPrimary, width: "100%", justifyContent: "center", fontSize: 13, padding: "8px 16px" }}
                     >
-                      <Icons.Plus /> Enroll — Add to My Training
+                      <Icons.Plus /> Enroll \u2014 Add to My Training
                     </button>
                   )}
-                  {isEnrolled && (
+                  {course.status !== "Coming Soon" && isEnrolled && (
                     <div style={{ display: "flex", gap: 8 }}>
                       <button
                         onClick={() => setView({ type: "course", courseId: course.id })}
@@ -2606,7 +2641,7 @@ function TrainingLibraryView({ user, completions, enrollments, onEnroll, onUnenr
                       </button>
                     </div>
                   )}
-                  {isRequired && certStatus === "incomplete" && (
+                  {course.status !== "Coming Soon" && isRequired && certStatus === "incomplete" && (
                     <button
                       onClick={() => setView({ type: "course", courseId: course.id })}
                       style={{ ...S.btnPrimary, width: "100%", justifyContent: "center", fontSize: 13, padding: "8px 16px" }}
@@ -2688,71 +2723,158 @@ function EmployeeForm({ item, onClose }) {
     try { if (isLive) { const token = await getToken(); await spUpdate(token, CONFIG.lists.users, item.id, { Active: !form.active }); } setEmployees(prev => prev.map(e => e.id === item.id ? { ...e, active: !form.active } : e)); onClose(); } catch (err) { alert("Failed: " + err.message); }
     setSaving(false);
   };
+  const handleDelete = async () => {
+    if (!confirm(`PERMANENTLY DELETE "${form.name}"? This cannot be undone. All completion records for this employee will be orphaned.`)) return;
+    if (!confirm("Are you absolutely sure? This is a permanent delete.")) return;
+    setSaving(true);
+    try { if (isLive) { const token = await getToken(); await spDelete(token, CONFIG.lists.users, item.id); } setEmployees(prev => prev.filter(e => e.id !== item.id)); onClose(); } catch (err) { alert("Delete failed: " + err.message); }
+    setSaving(false);
+  };
   return (
-    <Modal title={isEdit ? `Edit Employee — ${item.name}` : "Add Employee"} onClose={onClose}>
+    <Modal title={isEdit ? `Edit Employee \u2014 ${item.name}` : "Add Employee"} onClose={onClose}>
       <FormRow><FormField label="Full Name"><input style={S.input} value={form.name} onChange={e => set("name", e.target.value)} /></FormField><FormField label="Email"><input style={S.input} type="email" value={form.email} onChange={e => set("email", e.target.value)} /></FormField></FormRow>
       <FormRow>
         <FormField label="Role"><input style={S.input} list="role-options" value={form.role} onChange={e => set("role", e.target.value)} placeholder="Type or select..." /><datalist id="role-options">{roles.map(r => <option key={r} value={r} />)}</datalist></FormField>
         <FormField label="App Access Level"><select style={S.select} value={form.appRole} onChange={e => set("appRole", e.target.value)}><option value="Employee">Employee</option><option value="Admin">Admin</option></select></FormField>
       </FormRow>
       <FormRow>
-        <FormField label="Reports To"><select style={S.select} value={form.reportsTo} onChange={e => set("reportsTo", e.target.value)}><option value="">— None (Top Level) —</option>{employees.filter(e => e.active && e.id !== item?.id).map(e => <option key={e.id} value={e.email}>{e.name} ({e.role})</option>)}</select></FormField>
+        <FormField label="Reports To"><select style={S.select} value={form.reportsTo} onChange={e => set("reportsTo", e.target.value)}><option value="">{"\u2014"} None (Top Level) {"\u2014"}</option>{employees.filter(e => e.active && e.id !== item?.id).map(e => <option key={e.id} value={e.email}>{e.name} ({e.role})</option>)}</select></FormField>
         <FormField label="Hire Date"><input style={S.input} type="date" value={form.hireDate} onChange={e => set("hireDate", e.target.value)} /></FormField>
       </FormRow>
-      <SaveBar saving={saving} onSave={handleSave} onCancel={onClose} onDelete={isEdit ? handleToggleActive : null} deleteLabel={form.active ? "Deactivate" : "Reactivate"} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, paddingTop: 16, borderTop: `1px solid ${C.gray100}` }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          {isEdit && <button style={{ ...S.btnSecondary, ...S.btnSmall }} onClick={handleToggleActive} disabled={saving}>{form.active ? "Deactivate" : "Reactivate"}</button>}
+          {isEdit && <button style={{ ...S.btnSecondary, ...S.btnSmall, color: "#C44B3B", borderColor: "#C44B3B" }} onClick={handleDelete} disabled={saving}>Permanently Delete</button>}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={S.btnSecondary} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={S.btnPrimary} onClick={handleSave} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
+        </div>
+      </div>
     </Modal>
   );
 }
 
 // ── COURSE FORM ──
 function CourseForm({ item, onClose }) {
-  const { setCourses, isLive, getToken } = useData();
+  const { employees, enrollments, learningPaths, setCourses, isLive, getToken } = useData();
   const isEdit = !!item;
+  const wasComingSoon = isEdit && item.status === "Coming Soon";
   const categories = ["Onboarding", "Compliance", "Leasing", "Maintenance", "Operations", "Safety", "Financial", "Management"];
-  const [form, setForm] = useState({ name: item?.name || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999 });
+  const [form, setForm] = useState({ name: item?.name || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999, status: item?.status || "Active" });
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+
+  // Send "Course Now Available" email to pre-registered and learning path employees
+  const sendGoLiveNotifications = async (token, courseId, courseName) => {
+    // 1. Pre-registered employees (voluntary enrollments for this course)
+    const preRegistered = enrollments.filter(e => e.courseId === courseId).map(e => employees.find(emp => emp.id === e.employeeId)).filter(Boolean);
+    // 2. Employees whose learning path includes this course
+    const pathsWithCourse = learningPaths.filter(p => p.courseIds.includes(courseId));
+    const pathEmployees = [];
+    for (const path of pathsWithCourse) {
+      for (const emp of employees.filter(e => e.active)) {
+        const empRoles = [emp.role];
+        if (path.roles.includes("All") || path.roles.some(r => empRoles.includes(r))) {
+          if (!pathEmployees.some(pe => pe.id === emp.id)) pathEmployees.push(emp);
+        }
+      }
+    }
+    // Combine and deduplicate
+    const allRecipients = [...preRegistered];
+    for (const emp of pathEmployees) { if (!allRecipients.some(r => r.id === emp.id)) allRecipients.push(emp); }
+    // Send individual emails
+    let sent = 0;
+    for (const emp of allRecipients) {
+      const isPreReg = preRegistered.some(pr => pr.id === emp.id);
+      const empPaths = pathsWithCourse.filter(p => p.roles.includes("All") || p.roles.includes(emp.role));
+      const bodyHtml = `<p>Hi ${emp.name.split(" ")[0]},</p>` +
+        `<p><strong>${courseName}</strong> is now available in NewShire University!</p>` +
+        (isPreReg ? `<p>You pre-registered for this course and it's now ready for you to begin.</p>` : "") +
+        (empPaths.length > 0 ? `<p>This course is part of your ${empPaths.map(p=>p.name).join(", ")} learning path${empPaths.length>1?"s":""}.</p>` : "") +
+        `<p>Log in to NewShire University to start the course.</p>`;
+      try {
+        await sendEmail(token, emp.email, `Course Now Available: ${courseName}`, emailTemplate(bodyHtml, `Course Now Available: ${courseName}`));
+        sent++;
+      } catch (e) { console.error(`Go-live email failed for ${emp.email}:`, e); }
+    }
+    if (sent > 0) alert(`Course published! ${sent} notification${sent > 1 ? "s" : ""} sent.`);
+  };
+
   const handleSave = async () => {
     if (!form.name.trim()) return alert("Course name is required.");
+    const goingLive = wasComingSoon && form.status === "Active";
     setSaving(true);
-    const fields = { Title: form.name.trim(), CourseDescription: form.description, Category: form.category, DurationMin: parseInt(form.durationMin,10)||0, RecertDays: parseInt(form.recertDays,10)||0, PassingScore: parseInt(form.passingScore,10)||80, SortOrder: parseInt(form.sortOrder,10)||999, CourseActive: true };
+    const fields = { Title: form.name.trim(), CourseDescription: form.description, Category: form.category, DurationMin: parseInt(form.durationMin,10)||0, RecertDays: parseInt(form.recertDays,10)||0, PassingScore: parseInt(form.passingScore,10)||80, SortOrder: parseInt(form.sortOrder,10)||999, CourseActive: form.status !== "Archived", CourseStatus: form.status };
     try {
       if (isLive) {
         const token = await getToken();
-        if (isEdit) { await spUpdate(token, CONFIG.lists.courses, item.id, fields); setCourses(prev => prev.map(c => c.id === item.id ? { ...c, name: fields.Title, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder } : c)); }
-        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder }].sort((a,b) => a.sortOrder - b.sortOrder)); }
+        if (isEdit) {
+          await spUpdate(token, CONFIG.lists.courses, item.id, fields);
+          setCourses(prev => prev.map(c => c.id === item.id ? { ...c, name: fields.Title, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus } : c));
+          // Fire go-live notifications if status changed from Coming Soon → Active
+          if (goingLive) { sendGoLiveNotifications(token, item.id, fields.Title).catch(e => console.error("Go-live notifications failed:", e)); }
+        }
+        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus }].sort((a,b) => a.sortOrder - b.sortOrder)); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
     setSaving(false);
   };
-  const handleDeactivate = async () => {
-    if (!confirm(`Deactivate course "${form.name}"?`)) return;
+  const handleDelete = async () => {
+    if (!confirm(`PERMANENTLY DELETE "${form.name}"? This cannot be undone. All lessons and quiz questions for this course will be orphaned.`)) return;
+    if (!confirm("Are you absolutely sure? This is a permanent delete.")) return;
     setSaving(true);
-    try { if (isLive) { const token = await getToken(); await spUpdate(token, CONFIG.lists.courses, item.id, { CourseActive: false }); } setCourses(prev => prev.filter(c => c.id !== item.id)); onClose(); } catch (err) { alert("Failed: " + err.message); }
+    try { if (isLive) { const token = await getToken(); await spDelete(token, CONFIG.lists.courses, item.id); } setCourses(prev => prev.filter(c => c.id !== item.id)); onClose(); } catch (err) { alert("Delete failed: " + err.message); }
     setSaving(false);
   };
   return (
-    <Modal title={isEdit ? `Edit Course — ${item.name}` : "Add Course"} onClose={onClose}>
+    <Modal title={isEdit ? `Edit Course \u2014 ${item.name}` : "Add Course"} onClose={onClose}>
       <FormField label="Course Name"><input style={S.input} value={form.name} onChange={e => set("name", e.target.value)} /></FormField>
       <FormField label="Description"><textarea style={{ ...S.input, minHeight: 60 }} value={form.description} onChange={e => set("description", e.target.value)} /></FormField>
       <FormRow><FormField label="Category"><select style={S.select} value={form.category} onChange={e => set("category", e.target.value)}>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select></FormField><FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField></FormRow>
       <FormRow><FormField label="Passing Score (%)" hint="Leave at 80 for default"><input style={S.input} type="number" value={form.passingScore} onChange={e => set("passingScore", e.target.value)} /></FormField><FormField label="Recert Period (days)" hint="0 or blank = no recert"><input style={S.input} type="number" value={form.recertDays} onChange={e => set("recertDays", e.target.value)} placeholder="e.g. 365" /></FormField></FormRow>
-      <FormField label="Sort Order" hint="Lower = first"><input style={S.input} type="number" value={form.sortOrder} onChange={e => set("sortOrder", e.target.value)} /></FormField>
-      <SaveBar saving={saving} onSave={handleSave} onCancel={onClose} onDelete={isEdit ? handleDeactivate : null} deleteLabel="Deactivate Course" />
+      <FormRow>
+        <FormField label="Sort Order" hint="Lower = first"><input style={S.input} type="number" value={form.sortOrder} onChange={e => set("sortOrder", e.target.value)} /></FormField>
+        <FormField label="Status">{wasComingSoon && form.status === "Active" && <div style={{fontSize:12,color:C.gold500,marginBottom:4}}>Changing to Active will notify all pre-registered employees and those with this course in their learning path.</div>}<select style={S.select} value={form.status} onChange={e => set("status", e.target.value)}><option value="Active">Active</option><option value="Coming Soon">Coming Soon</option><option value="Archived">Archived</option></select></FormField>
+      </FormRow>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, paddingTop: 16, borderTop: `1px solid ${C.gray100}` }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          {isEdit && <button style={{ ...S.btnSecondary, ...S.btnSmall, color: "#C44B3B", borderColor: "#C44B3B" }} onClick={handleDelete} disabled={saving}>Permanently Delete</button>}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={{ ...S.btnSecondary }} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={S.btnPrimary} onClick={handleSave} disabled={saving}>{saving ? (wasComingSoon && form.status === "Active" ? "Publishing..." : "Saving...") : (wasComingSoon && form.status === "Active" ? "Publish & Notify" : "Save")}</button>
+        </div>
+      </div>
     </Modal>
   );
 }
 
 // ── LEARNING PATH FORM ──
 function PathForm({ item, onClose }) {
-  const { courses, setLearningPaths, isLive, getToken } = useData();
+  const { employees, courses, setLearningPaths, isLive, getToken } = useData();
   const isEdit = !!item;
-  const allRoles = ["All","Property Manager","Leasing Agent","Maintenance Technician","Service Manager","Area Director","Virtual Assistant"];
+  // Dynamic roles: pull from employee list + hardcoded defaults + any roles already on this path
+  const defaultRoles = ["All","Property Manager","Leasing Agent","Maintenance Technician","Service Manager","Area Director","Virtual Assistant"];
+  const employeeRoles = [...new Set(employees.map(e => e.role).filter(Boolean))];
+  const existingPathRoles = item?.roles || [];
+  const allRoles = [...new Set([...defaultRoles, ...employeeRoles, ...existingPathRoles])].sort((a,b) => a === "All" ? -1 : b === "All" ? 1 : a.localeCompare(b));
+  const [customRole, setCustomRole] = useState("");
   const [form, setForm] = useState({ name: item?.name||"", description: item?.description||"", roles: item?.roles||["All"], courseIds: item?.courseIds||[], required: item?.required!==false, recertDays: item?.recertDays||"", dueDays: item?.dueDays||"" });
   const [saving, setSaving] = useState(false);
+  const [roleList, setRoleList] = useState(allRoles);
   const set = (k,v) => setForm(p => ({...p,[k]:v}));
   const toggleRole = (role) => { if (role==="All"){set("roles",form.roles.includes("All")?[]:["All"]);return;} let next=form.roles.filter(r=>r!=="All"); next=next.includes(role)?next.filter(r=>r!==role):[...next,role]; set("roles",next.length===0?["All"]:next); };
+  const addCustomRole = () => {
+    const r = customRole.trim();
+    if (!r) return;
+    if (!roleList.includes(r)) setRoleList(prev => [...prev, r].sort((a,b) => a === "All" ? -1 : b === "All" ? 1 : a.localeCompare(b)));
+    let next = form.roles.filter(x => x !== "All");
+    if (!next.includes(r)) next.push(r);
+    set("roles", next);
+    setCustomRole("");
+  };
   const toggleCourse = (cid) => { set("courseIds", form.courseIds.includes(cid)?form.courseIds.filter(c=>c!==cid):[...form.courseIds,cid]); };
   const handleSave = async () => {
     if (!form.name.trim()) return alert("Path name is required.");
@@ -2769,35 +2891,46 @@ function PathForm({ item, onClose }) {
     } catch (err) { alert("Save failed: " + err.message); }
     setSaving(false);
   };
-  const handleDeactivate = async () => {
-    if (!confirm(`Deactivate path "${form.name}"?`)) return;
+  const handleDelete = async () => {
+    if (!confirm(`PERMANENTLY DELETE path "${form.name}"? This cannot be undone.`)) return;
+    if (!confirm("Are you absolutely sure? This is a permanent delete.")) return;
     setSaving(true);
-    try { if (isLive) { const token = await getToken(); await spUpdate(token, CONFIG.lists.paths, item.id, { PathActive: false }); } setLearningPaths(prev => prev.filter(p => p.id!==item.id)); onClose(); } catch (err) { alert("Failed: " + err.message); }
+    try { if (isLive) { const token = await getToken(); await spDelete(token, CONFIG.lists.paths, item.id); } setLearningPaths(prev => prev.filter(p => p.id!==item.id)); onClose(); } catch (err) { alert("Delete failed: " + err.message); }
     setSaving(false);
   };
   return (
-    <Modal title={isEdit ? `Edit Path — ${item.name}` : "Add Learning Path"} onClose={onClose} width={640}>
+    <Modal title={isEdit ? `Edit Path \u2014 ${item.name}` : "Add Learning Path"} onClose={onClose} width={640}>
       <FormField label="Path Name"><input style={S.input} value={form.name} onChange={e => set("name", e.target.value)} /></FormField>
       <FormField label="Description"><textarea style={{...S.input,minHeight:60}} value={form.description} onChange={e => set("description", e.target.value)} /></FormField>
-      <FormField label="Assigned Roles" hint="Select which roles this path applies to">
-        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:4}}>{allRoles.map(role => (
-          <button key={role} onClick={()=>toggleRole(role)} style={{padding:"5px 12px",fontSize:13,borderRadius:9999,cursor:"pointer",fontFamily:"inherit",border:`1px solid ${form.roles.includes(role)?C.teal700:C.gray200}`,background:form.roles.includes(role)?C.teal50:C.white,color:form.roles.includes(role)?C.teal700:C.gray400,fontWeight:form.roles.includes(role)?600:400}}>{form.roles.includes(role)?"✓ ":""}{role}</button>
+      <FormField label="Assigned Roles" hint="Select which roles this path applies to, or add a new role">
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:4}}>{roleList.map(role => (
+          <button key={role} onClick={()=>toggleRole(role)} style={{padding:"5px 12px",fontSize:13,borderRadius:9999,cursor:"pointer",fontFamily:"inherit",border:`1px solid ${form.roles.includes(role)?C.teal700:C.gray200}`,background:form.roles.includes(role)?C.teal50:C.white,color:form.roles.includes(role)?C.teal700:C.gray400,fontWeight:form.roles.includes(role)?600:400}}>{form.roles.includes(role)?"\u2713 ":""}{role}</button>
         ))}</div>
+        <div style={{display:"flex",gap:6,marginTop:8}}>
+          <input style={{...S.input,flex:1,marginTop:0}} value={customRole} onChange={e => setCustomRole(e.target.value)} placeholder="Add a new role..." onKeyDown={e => e.key==="Enter" && (e.preventDefault(), addCustomRole())} />
+          <button style={{...S.btnSecondary,...S.btnSmall}} onClick={addCustomRole}>Add Role</button>
+        </div>
       </FormField>
-      <FormField label="Courses in Path" hint={`${form.courseIds.length} selected`}>
-        <div style={{maxHeight:200,overflowY:"auto",border:`1px solid ${C.gray200}`,borderRadius:4,marginTop:4}}>{courses.map(course => (
+      <FormField label="Courses in Path" hint={`${form.courseIds.length} selected \u2014 click to toggle, order matches selection order`}>
+        <div style={{maxHeight:200,overflowY:"auto",border:`1px solid ${C.gray200}`,borderRadius:4,marginTop:4}}>{courses.filter(c => c.status !== "Archived").map(course => (
           <div key={course.id} onClick={()=>toggleCourse(course.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${C.gray100}`,background:form.courseIds.includes(course.id)?C.teal50:C.white}}>
-            <span style={{width:18,height:18,borderRadius:3,border:`2px solid ${form.courseIds.includes(course.id)?C.teal700:C.gray200}`,background:form.courseIds.includes(course.id)?C.teal700:C.white,color:C.white,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,flexShrink:0}}>{form.courseIds.includes(course.id)?"✓":""}</span>
-            <div><div style={{fontSize:14,fontWeight:500,color:C.teal700}}>{course.name}</div><div style={{fontSize:12,color:C.gray400}}>{course.category} · {course.durationMin} min</div></div>
+            <span style={{width:18,height:18,borderRadius:3,border:`2px solid ${form.courseIds.includes(course.id)?C.teal700:C.gray200}`,background:form.courseIds.includes(course.id)?C.teal700:C.white,color:C.white,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,flexShrink:0}}>{form.courseIds.includes(course.id)?"\u2713":""}</span>
+            <div><div style={{fontSize:14,fontWeight:500,color:C.teal700}}>{course.name}</div><div style={{fontSize:12,color:C.gray400}}>{course.category} \u00b7 {course.durationMin} min{course.status === "Coming Soon" ? " \u00b7 Coming Soon" : ""}</div></div>
           </div>
         ))}</div>
       </FormField>
       <FormRow>
-        <FormField label="Required?"><select style={S.select} value={form.required?"yes":"no"} onChange={e => set("required",e.target.value==="yes")}><option value="yes">Yes — Required for assigned roles</option><option value="no">No — Optional / Voluntary</option></select></FormField>
+        <FormField label="Required?"><select style={S.select} value={form.required?"yes":"no"} onChange={e => set("required",e.target.value==="yes")}><option value="yes">Yes \u2014 Required for assigned roles</option><option value="no">No \u2014 Optional / Voluntary</option></select></FormField>
         <FormField label="Due Days from Hire" hint="0 or blank = no deadline"><input style={S.input} type="number" value={form.dueDays} onChange={e => set("dueDays", e.target.value)} placeholder="e.g. 30" /></FormField>
       </FormRow>
       <FormField label="Recert Period (days)" hint="0 or blank = no recert"><input style={S.input} type="number" value={form.recertDays} onChange={e => set("recertDays", e.target.value)} placeholder="e.g. 365" /></FormField>
-      <SaveBar saving={saving} onSave={handleSave} onCancel={onClose} onDelete={isEdit ? handleDeactivate : null} deleteLabel="Deactivate Path" />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, paddingTop: 16, borderTop: `1px solid ${C.gray100}` }}>
+        <div>{isEdit && <button style={{ ...S.btnSecondary, ...S.btnSmall, color: "#C44B3B", borderColor: "#C44B3B" }} onClick={handleDelete} disabled={saving}>Permanently Delete</button>}</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={S.btnSecondary} onClick={onClose} disabled={saving}>Cancel</button>
+          <button style={S.btnPrimary} onClick={handleSave} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
+        </div>
+      </div>
     </Modal>
   );
 }
@@ -2910,6 +3043,7 @@ function ManageView({ mobile }) {
   const [modal, setModal] = useState(null);
   const [expandedCourse, setExpandedCourse] = useState(null);
   const [showInactive, setShowInactive] = useState(false);
+  const [courseFilter, setCourseFilter] = useState(null);
 
   const closeModal = () => setModal(null);
 
@@ -3016,17 +3150,29 @@ function ManageView({ mobile }) {
       {/* ── COURSES TAB ── */}
       {subTab === "courses" && !expandedCourse && (
         <div style={S.card}>
-          <div style={{ ...S.cardTitle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ ...S.cardTitle, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
             <span>Courses</span>
-            <button style={{ ...S.btnPrimary, ...S.btnSmall }} onClick={() => setModal({ type: "course" })}>+ Add Course</button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <select style={{ ...S.select, fontSize: 12, padding: "4px 8px", width: "auto" }} value={courseFilter || "all"} onChange={e => setCourseFilter(e.target.value === "all" ? null : e.target.value)}>
+                <option value="all">All statuses</option>
+                <option value="Active">Active</option>
+                <option value="Coming Soon">Coming Soon</option>
+                <option value="Archived">Archived</option>
+              </select>
+              <button style={{ ...S.btnPrimary, ...S.btnSmall }} onClick={() => setModal({ type: "course" })}>+ Add Course</button>
+            </div>
           </div>
-          {mobile ? (
-            courses.map(course => {
+          {(() => { const filtered = courseFilter ? courses.filter(c => c.status === courseFilter) : courses; return mobile ? (
+            filtered.map(course => {
               const cLessons = lessons.filter(l => l.courseId === course.id);
               const cQuiz = quizzes[course.id]?.questions || [];
+              const statusBadge = course.status === "Coming Soon" ? "info" : course.status === "Archived" ? "neutral" : "success";
               return (
-                <div key={course.id} style={{ padding: "12px 0", borderBottom: `1px solid ${C.gray100}`, cursor: "pointer" }} onClick={() => setExpandedCourse(course)}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: C.teal700 }}>{course.name}</div>
+                <div key={course.id} style={{ padding: "12px 0", borderBottom: `1px solid ${C.gray100}`, cursor: "pointer", opacity: course.status === "Archived" ? 0.5 : 1 }} onClick={() => setExpandedCourse(course)}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: C.teal700 }}>{course.name}</span>
+                    <span style={S.badge(statusBadge)}>{course.status}</span>
+                  </div>
                   <div style={{ fontSize: 13, color: C.gray400, marginTop: 2 }}>{course.category} \u00b7 {course.durationMin} min \u00b7 {cLessons.length} lessons \u00b7 {cQuiz.length} quiz Qs</div>
                   <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
                     {course.recertDays && <span style={S.badge("warning")}>Recert: {course.recertDays}d</span>}
@@ -3040,6 +3186,7 @@ function ManageView({ mobile }) {
               <thead>
                 <tr>
                   <th style={S.th}>Course</th>
+                  <th style={S.th}>Status</th>
                   <th style={S.th}>Category</th>
                   <th style={S.th}>Duration</th>
                   <th style={S.th}>Lessons</th>
@@ -3049,12 +3196,14 @@ function ManageView({ mobile }) {
                 </tr>
               </thead>
               <tbody>
-                {courses.map(course => {
+                {filtered.map(course => {
                   const cLessons = lessons.filter(l => l.courseId === course.id);
                   const cQuiz = quizzes[course.id]?.questions || [];
+                  const statusBadge = course.status === "Coming Soon" ? "info" : course.status === "Archived" ? "neutral" : "success";
                   return (
-                    <tr key={course.id} style={{ cursor: "pointer" }} onClick={() => setExpandedCourse(course)}>
+                    <tr key={course.id} style={{ cursor: "pointer", opacity: course.status === "Archived" ? 0.5 : 1 }} onClick={() => setExpandedCourse(course)}>
                       <td style={{ ...S.td, fontWeight: 500, color: C.teal700 }}>{course.name}</td>
+                      <td style={S.td}><span style={S.badge(statusBadge)}>{course.status}</span></td>
                       <td style={S.td}>{course.category}</td>
                       <td style={S.td}>{course.durationMin} min</td>
                       <td style={S.td}>{cLessons.length}</td>
@@ -3071,7 +3220,7 @@ function ManageView({ mobile }) {
                 })}
               </tbody>
             </table>
-          )}
+          ); })()}
         </div>
       )}
 
