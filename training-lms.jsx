@@ -205,7 +205,7 @@ function normalizeCourses(items) {
 
 function normalizePaths(items) {
   return items
-    .filter(item => item.fields.Active !== false)
+    .filter(item => item.fields.PathActive !== false)
     .map(item => {
       const f = item.fields;
       const courseIdStr = f.CourseIDs || "";
@@ -2891,7 +2891,7 @@ function PathForm({ item, onClose }) {
     if (!form.name.trim()) return alert("Path name is required.");
     if (form.courseIds.length===0) return alert("Select at least one course.");
     setSaving(true);
-    const fields = { Title: form.name.trim(), PathDescription: form.description, Roles: form.roles.join(","), CourseIDs: form.courseIds.join(","), Required: form.required, DueDays: parseInt(form.dueDays,10)||0, Active: true };
+    const fields = { Title: form.name.trim(), PathDescription: form.description, Roles: form.roles.join(","), CourseIDs: form.courseIds.join(","), Required: form.required, DueDays: parseInt(form.dueDays,10)||0, PathActive: true };
     try {
       if (isLive) {
         const token = await getToken();
