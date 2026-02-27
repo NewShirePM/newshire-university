@@ -205,15 +205,16 @@ function normalizeCourses(items) {
 
 function normalizePaths(items) {
   return items
-    .filter(item => item.fields.PathActive !== false)
+    .filter(item => item.fields.Active !== false)
     .map(item => {
       const f = item.fields;
       const courseIdStr = f.CourseIDs || "";
       const courseIds = courseIdStr.split(",").map(s => s.trim()).filter(Boolean);
       let roles = [];
-      const rolesRaw = f.Roles || "";
-      if (typeof rolesRaw === "string") {
-        // SharePoint multi-choice: ";#All;#" or seed script comma-sep "All"
+      const rolesRaw = f.Roles;
+      if (Array.isArray(rolesRaw)) {
+        roles = rolesRaw;
+      } else if (typeof rolesRaw === "string") {
         roles = rolesRaw.split(";#").filter(s => s && s !== "#");
         if (roles.length <= 1 && rolesRaw.includes(",")) {
           roles = rolesRaw.split(",").map(s => s.trim()).filter(Boolean);
@@ -223,12 +224,12 @@ function normalizePaths(items) {
       return {
         id: String(item.id),
         name: f.Title || "",
-        description: f.PathDescription || "",
+        description: f.Description || "",
         roles,
         courseIds,
         required: f.Required !== false,
         recertDays: f.RecertDays || null,
-        dueDays: f.DueDays || null, // days from hire date to complete
+        dueDays: f.DueDays || null,
       };
     });
 }
@@ -2893,12 +2894,12 @@ function PathForm({ item, onClose }) {
     if (!form.name.trim()) return alert("Path name is required.");
     if (form.courseIds.length===0) return alert("Select at least one course.");
     setSaving(true);
-    const fields = { Title: form.name.trim(), PathDescription: form.description, Roles: form.roles.join(","), CourseIDs: form.courseIds.join(","), Required: form.required, DueDays: parseInt(form.dueDays,10)||0, PathActive: true };
+    const fields = { Title: form.name.trim(), Description: form.description, "Roles@odata.type": "Collection(Edm.String)", Roles: form.roles, CourseIDs: form.courseIds.join(","), Required: form.required, DueDays: parseInt(form.dueDays,10)||0, Active: true };
     try {
       if (isLive) {
         const token = await getToken();
-        if (isEdit) { await spUpdate(token, CONFIG.lists.paths, item.id, fields); setLearningPaths(prev => prev.map(p => p.id===item.id ? {...p, name:fields.Title, description:fields.PathDescription, roles:form.roles, courseIds:form.courseIds, required:fields.Required, recertDays:fields.RecertDays||null, dueDays:fields.DueDays||null} : p)); }
-        else { const res = await spCreate(token, CONFIG.lists.paths, fields); setLearningPaths(prev => [...prev, {id:String(res.id), name:fields.Title, description:fields.PathDescription, roles:form.roles, courseIds:form.courseIds, required:fields.Required, recertDays:fields.RecertDays||null, dueDays:fields.DueDays||null}]); }
+        if (isEdit) { await spUpdate(token, CONFIG.lists.paths, item.id, fields); setLearningPaths(prev => prev.map(p => p.id===item.id ? {...p, name:fields.Title, description:fields.Description, roles:form.roles, courseIds:form.courseIds, required:fields.Required, dueDays:fields.DueDays||null} : p)); }
+        else { const res = await spCreate(token, CONFIG.lists.paths, fields); setLearningPaths(prev => [...prev, {id:String(res.id), name:fields.Title, description:fields.Description, roles:form.roles, courseIds:form.courseIds, required:fields.Required, dueDays:fields.DueDays||null}]); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
