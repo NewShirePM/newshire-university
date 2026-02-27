@@ -222,7 +222,7 @@ function normalizePaths(items) {
         roles,
         courseIds,
         required: f.Required !== false,
-        recertDays: f.PathRecertDays || null,
+        recertDays: f.RecertDays || null,
         dueDays: f.DueDays || null, // days from hire date to complete
       };
     });
@@ -2861,7 +2861,7 @@ function PathForm({ item, onClose }) {
   const existingPathRoles = item?.roles || [];
   const allRoles = [...new Set([...defaultRoles, ...employeeRoles, ...existingPathRoles])].sort((a,b) => a === "All" ? -1 : b === "All" ? 1 : a.localeCompare(b));
   const [customRole, setCustomRole] = useState("");
-  const [form, setForm] = useState({ name: item?.name||"", description: item?.description||"", roles: item?.roles||["All"], courseIds: item?.courseIds||[], required: item?.required!==false, recertDays: item?.recertDays||"", dueDays: item?.dueDays||"" });
+  const [form, setForm] = useState({ name: item?.name||"", description: item?.description||"", roles: item?.roles||["All"], courseIds: item?.courseIds||[], required: item?.required!==false, dueDays: item?.dueDays||"" });
   const [saving, setSaving] = useState(false);
   const [roleList, setRoleList] = useState(allRoles);
   const set = (k,v) => setForm(p => ({...p,[k]:v}));
@@ -2880,12 +2880,12 @@ function PathForm({ item, onClose }) {
     if (!form.name.trim()) return alert("Path name is required.");
     if (form.courseIds.length===0) return alert("Select at least one course.");
     setSaving(true);
-    const fields = { Title: form.name.trim(), PathDescription: form.description, Roles: form.roles.join(","), CourseIDs: form.courseIds.join(","), Required: form.required, PathRecertDays: parseInt(form.recertDays,10)||0, DueDays: parseInt(form.dueDays,10)||0, PathActive: true };
+    const fields = { Title: form.name.trim(), PathDescription: form.description, Roles: form.roles.join(","), CourseIDs: form.courseIds.join(","), Required: form.required, DueDays: parseInt(form.dueDays,10)||0, PathActive: true };
     try {
       if (isLive) {
         const token = await getToken();
-        if (isEdit) { await spUpdate(token, CONFIG.lists.paths, item.id, fields); setLearningPaths(prev => prev.map(p => p.id===item.id ? {...p, name:fields.Title, description:fields.PathDescription, roles:form.roles, courseIds:form.courseIds, required:fields.Required, recertDays:fields.PathRecertDays||null, dueDays:fields.DueDays||null} : p)); }
-        else { const res = await spCreate(token, CONFIG.lists.paths, fields); setLearningPaths(prev => [...prev, {id:String(res.id), name:fields.Title, description:fields.PathDescription, roles:form.roles, courseIds:form.courseIds, required:fields.Required, recertDays:fields.PathRecertDays||null, dueDays:fields.DueDays||null}]); }
+        if (isEdit) { await spUpdate(token, CONFIG.lists.paths, item.id, fields); setLearningPaths(prev => prev.map(p => p.id===item.id ? {...p, name:fields.Title, description:fields.PathDescription, roles:form.roles, courseIds:form.courseIds, required:fields.Required, recertDays:fields.RecertDays||null, dueDays:fields.DueDays||null} : p)); }
+        else { const res = await spCreate(token, CONFIG.lists.paths, fields); setLearningPaths(prev => [...prev, {id:String(res.id), name:fields.Title, description:fields.PathDescription, roles:form.roles, courseIds:form.courseIds, required:fields.Required, recertDays:fields.RecertDays||null, dueDays:fields.DueDays||null}]); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
@@ -2923,7 +2923,6 @@ function PathForm({ item, onClose }) {
         <FormField label="Required?"><select style={S.select} value={form.required?"yes":"no"} onChange={e => set("required",e.target.value==="yes")}><option value="yes">Yes \u2014 Required for assigned roles</option><option value="no">No \u2014 Optional / Voluntary</option></select></FormField>
         <FormField label="Due Days from Hire" hint="0 or blank = no deadline"><input style={S.input} type="number" value={form.dueDays} onChange={e => set("dueDays", e.target.value)} placeholder="e.g. 30" /></FormField>
       </FormRow>
-      <FormField label="Recert Period (days)" hint="0 or blank = no recert"><input style={S.input} type="number" value={form.recertDays} onChange={e => set("recertDays", e.target.value)} placeholder="e.g. 365" /></FormField>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, paddingTop: 16, borderTop: `1px solid ${C.gray100}` }}>
         <div>{isEdit && <button style={{ ...S.btnSecondary, ...S.btnSmall, color: "#C44B3B", borderColor: "#C44B3B" }} onClick={handleDelete} disabled={saving}>Permanently Delete</button>}</div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -3133,7 +3132,6 @@ function ManageView({ mobile }) {
                     <span style={S.badge("info")}>{path.courseIds.length} courses</span>
                     {path.required && <span style={S.badge("warning")}>REQUIRED</span>}
                     <span style={S.badge("neutral")}>{path.roles.join(", ")}</span>
-                    {path.recertDays && <span style={S.badge("neutral")}>Recert: {path.recertDays}d</span>}
                     {path.dueDays && <span style={S.badge("info")}>Due within {path.dueDays}d of hire</span>}
                   </div>
                   <div style={{ fontSize: 12, color: C.gray400, marginTop: 6 }}>
