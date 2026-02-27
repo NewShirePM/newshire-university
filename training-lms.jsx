@@ -28,6 +28,11 @@ const CONFIG = {
 const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
 const SITE_URL = `${GRAPH_BASE}/sites/${CONFIG.siteId}`;
 
+// Global email pause flag — checked by sendEmail before every send
+// Persists in memory; toggled by admin in Settings tab
+let EMAIL_PAUSED = false;
+try { EMAIL_PAUSED = JSON.parse(sessionStorage.getItem("nsu_emails_paused") || "false"); } catch(e) {}
+
 // ============================================================
 // REACT CONTEXT — All components pull data from here
 // ============================================================
@@ -396,6 +401,7 @@ function emailTemplate(bodyHtml, subject) {
 }
 
 async function sendEmail(token, to, subject, bodyHtml) {
+  if (EMAIL_PAUSED) { console.log(`[EMAIL PAUSED] Suppressed: "${subject}" to ${Array.isArray(to) ? to.join(", ") : to}`); return; }
   const toRecipients = (Array.isArray(to) ? to : [to]).map(email => ({ emailAddress: { address: email } }));
   const res = await fetch(`${GRAPH_BASE}/me/sendMail`, {
     method: "POST",
@@ -1481,12 +1487,19 @@ function App() {
               <div style={{ fontSize: 13, color: "#FFFFFF", fontWeight: 500 }}>{currentUser.name}</div>
               <div style={{ fontSize: 11, color: C.teal100 }}>
                 {currentUser.role}
-                {isAdmin && " · Admin"}
-                {!isAdmin && isManager && " · Manager"}
+                {isAdmin && " \u00b7 Admin"}
+                {!isAdmin && isManager && " \u00b7 Manager"}
               </div>
             </div>
           </div>
         </div>
+
+        {/* Email Paused Banner */}
+        {isAdmin && EMAIL_PAUSED && (
+          <div style={{ background: "#C44B3B", color: "#FFF", padding: "6px 16px", fontSize: 12, fontWeight: 600, textAlign: "center", letterSpacing: "0.03em" }}>
+            EMAILS PAUSED — No notification emails are being sent. Go to Manage → Settings to re-enable.
+          </div>
+        )}
 
         {/* Tabs */}
         <div style={S.tabBar}>
@@ -3043,6 +3056,7 @@ function ManageView({ mobile }) {
   const [expandedCourse, setExpandedCourse] = useState(null);
   const [showInactive, setShowInactive] = useState(false);
   const [courseFilter, setCourseFilter] = useState(null);
+  const [emailsPaused, setEmailsPaused] = useState(EMAIL_PAUSED);
 
   const closeModal = () => setModal(null);
 
@@ -3302,6 +3316,36 @@ function ManageView({ mobile }) {
       {subTab === "config" && (
         <div style={S.card}>
           <div style={S.cardTitle}>Training Settings</div>
+
+          {/* Email Pause Toggle */}
+          <div style={{ marginBottom: 20, padding: 16, background: emailsPaused ? "#FFF0F0" : "#F0FFF4", border: `1px solid ${emailsPaused ? "#C44B3B" : "#2E7D5B"}`, borderRadius: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: emailsPaused ? "#C44B3B" : "#2E7D5B" }}>
+                  {emailsPaused ? "Emails are PAUSED" : "Emails are ACTIVE"}
+                </div>
+                <div style={{ fontSize: 12, color: C.gray400, marginTop: 2 }}>
+                  {emailsPaused ? "No notification emails will be sent. All other app functions continue normally. Power Automate flows are not affected by this toggle." : "The app will send notification emails for quiz results, enrollments, and course launches."}
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  const next = !emailsPaused;
+                  setEmailsPaused(next);
+                  EMAIL_PAUSED = next;
+                  try { sessionStorage.setItem("nsu_emails_paused", JSON.stringify(next)); } catch(e) {}
+                }}
+                style={{
+                  ...S.btnSecondary, ...S.btnSmall, minWidth: 120,
+                  color: emailsPaused ? "#2E7D5B" : "#C44B3B",
+                  borderColor: emailsPaused ? "#2E7D5B" : "#C44B3B",
+                }}
+              >
+                {emailsPaused ? "Enable Emails" : "Pause Emails"}
+              </button>
+            </div>
+          </div>
+
           <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 16 }}>
             <div>
               <label style={S.label}>Default Passing Score (%)</label>
@@ -3323,8 +3367,8 @@ function ManageView({ mobile }) {
           <div style={{ marginTop: 20, padding: "16px", background: C.teal50, borderRadius: 6 }}>
             <div style={{ fontSize: 14, fontWeight: 600, color: C.teal700, marginBottom: 8 }}>Notification Settings</div>
             <div style={{ fontSize: 13, color: C.gray600, lineHeight: 1.6 }}>
-              Cert expiration reminders are sent automatically by Power Automate at 30, 14, 7, 3, and 0 days before expiry.
-              Monday manager compliance reports are sent weekly to managers with outstanding items.
+              Cert expiration reminders and Monday manager reports are sent by Power Automate and are not affected by the pause toggle above.
+              To pause those, disable the flows directly in Power Automate.
             </div>
           </div>
         </div>
