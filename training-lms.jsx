@@ -148,6 +148,16 @@ async function spDelete(token, listName, itemId) {
   if (!res.ok && res.status !== 204) throw new Error(`DELETE ${listName}/${itemId} failed (${res.status})`);
 }
 
+async function spUpdate(token, listName, itemId, fields) {
+  const res = await fetch(`${listUrl(listName)}/${itemId}/fields`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+  if (!res.ok) throw new Error(`PATCH ${listName}/${itemId} failed (${res.status})`);
+  return res.json();
+}
+
 // ============================================================
 // DATA NORMALIZATION — SharePoint fields → app shape
 // ============================================================
@@ -1436,7 +1446,7 @@ function App() {
     : subordinateIds;
 
   // ── Context value ──
-  const ctx = { employees, courses, learningPaths, lessons, quizzes, completions, enrollments, isLive, getToken: getToken };
+  const ctx = { employees, setEmployees, courses, setCourses, learningPaths, setLearningPaths, lessons, setLessons, quizzes, setQuizzes, completions, enrollments, isLive, getToken: getToken };
 
   return (
     <DataContext.Provider value={ctx}>
@@ -2619,20 +2629,298 @@ function TrainingLibraryView({ user, completions, enrollments, onEnroll, onUnenr
 }
 
 // ============================================================
-// MANAGE VIEW (Admin — Learning Paths, Courses, Config)
+// MODAL COMPONENT
+// ============================================================
+function Modal({ title, onClose, width, children }) {
+  return (
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(28,55,64,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: 16 }} onClick={onClose}>
+      <div style={{ background: C.white, borderRadius: 8, boxShadow: "0 8px 32px rgba(28,55,64,0.18)", width: "100%", maxWidth: width || 560, maxHeight: "90vh", overflow: "auto" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 20px", borderBottom: `1px solid ${C.gray100}` }}>
+          <div style={{ fontSize: 17, fontWeight: 600, color: C.teal700 }}>{title}</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: C.gray400, padding: "4px 8px" }}>✕</button>
+        </div>
+        <div style={{ padding: 20 }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+function FormField({ label, children, hint }) {
+  return (<div style={{ marginBottom: 14 }}><label style={S.label}>{label}</label>{children}{hint && <div style={{ fontSize: 12, color: C.gray400, marginTop: 3 }}>{hint}</div>}</div>);
+}
+function FormRow({ children }) { return <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>{children}</div>; }
+function SaveBar({ saving, onSave, onCancel, onDelete, deleteLabel }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.gray100}` }}>
+      <div>{onDelete && <button onClick={onDelete} style={{ ...S.btnDanger, ...S.btnSmall, opacity: saving ? 0.5 : 1 }} disabled={saving}>{deleteLabel || "Deactivate"}</button>}</div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={onCancel} style={{ ...S.btnSecondary, ...S.btnSmall }} disabled={saving}>Cancel</button>
+        <button onClick={onSave} style={{ ...S.btnPrimary, ...S.btnSmall, opacity: saving ? 0.5 : 1 }} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
+      </div>
+    </div>
+  );
+}
+
+// ── EMPLOYEE FORM ──
+function EmployeeForm({ item, onClose }) {
+  const { employees, setEmployees, isLive, getToken } = useData();
+  const isEdit = !!item;
+  const [form, setForm] = useState({ name: item?.name || "", email: item?.email || "", role: item?.role || "Property Manager", appRole: item?.appRole || "Employee", reportsTo: item?.reportsTo || "", hireDate: item?.hireDate || new Date().toISOString().split("T")[0], active: item?.active !== false });
+  const [saving, setSaving] = useState(false);
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const roles = [...new Set(employees.map(e => e.role).filter(Boolean))].sort();
+  const handleSave = async () => {
+    if (!form.name.trim() || !form.email.trim()) return alert("Name and email are required.");
+    setSaving(true);
+    const fields = { Title: form.name.trim(), Email: form.email.trim().toLowerCase(), Role: form.role, AppRole: form.appRole, ReportsTo: form.reportsTo, HireDate: form.hireDate, Active: form.active };
+    try {
+      if (isLive) {
+        const token = await getToken();
+        if (isEdit) { await spUpdate(token, CONFIG.lists.users, item.id, fields); setEmployees(prev => prev.map(e => e.id === item.id ? { ...e, name: fields.Title, email: fields.Email, role: fields.Role, appRole: fields.AppRole, reportsTo: fields.ReportsTo.toLowerCase(), hireDate: fields.HireDate, active: fields.Active } : e)); }
+        else { const res = await spCreate(token, CONFIG.lists.users, fields); setEmployees(prev => [...prev, { id: String(res.id), name: fields.Title, email: fields.Email, role: fields.Role, appRole: fields.AppRole, reportsTo: fields.ReportsTo.toLowerCase(), hireDate: fields.HireDate, active: fields.Active }]); }
+      }
+      onClose();
+    } catch (err) { alert("Save failed: " + err.message); }
+    setSaving(false);
+  };
+  const handleToggleActive = async () => {
+    if (!confirm(`${form.active ? "Deactivate" : "Reactivate"} ${form.name}?`)) return;
+    setSaving(true);
+    try { if (isLive) { const token = await getToken(); await spUpdate(token, CONFIG.lists.users, item.id, { Active: !form.active }); } setEmployees(prev => prev.map(e => e.id === item.id ? { ...e, active: !form.active } : e)); onClose(); } catch (err) { alert("Failed: " + err.message); }
+    setSaving(false);
+  };
+  return (
+    <Modal title={isEdit ? `Edit Employee — ${item.name}` : "Add Employee"} onClose={onClose}>
+      <FormRow><FormField label="Full Name"><input style={S.input} value={form.name} onChange={e => set("name", e.target.value)} /></FormField><FormField label="Email"><input style={S.input} type="email" value={form.email} onChange={e => set("email", e.target.value)} /></FormField></FormRow>
+      <FormRow>
+        <FormField label="Role"><input style={S.input} list="role-options" value={form.role} onChange={e => set("role", e.target.value)} placeholder="Type or select..." /><datalist id="role-options">{roles.map(r => <option key={r} value={r} />)}</datalist></FormField>
+        <FormField label="App Access Level"><select style={S.select} value={form.appRole} onChange={e => set("appRole", e.target.value)}><option value="Employee">Employee</option><option value="Admin">Admin</option></select></FormField>
+      </FormRow>
+      <FormRow>
+        <FormField label="Reports To"><select style={S.select} value={form.reportsTo} onChange={e => set("reportsTo", e.target.value)}><option value="">— None (Top Level) —</option>{employees.filter(e => e.active && e.id !== item?.id).map(e => <option key={e.id} value={e.email}>{e.name} ({e.role})</option>)}</select></FormField>
+        <FormField label="Hire Date"><input style={S.input} type="date" value={form.hireDate} onChange={e => set("hireDate", e.target.value)} /></FormField>
+      </FormRow>
+      <SaveBar saving={saving} onSave={handleSave} onCancel={onClose} onDelete={isEdit ? handleToggleActive : null} deleteLabel={form.active ? "Deactivate" : "Reactivate"} />
+    </Modal>
+  );
+}
+
+// ── COURSE FORM ──
+function CourseForm({ item, onClose }) {
+  const { setCourses, isLive, getToken } = useData();
+  const isEdit = !!item;
+  const categories = ["Onboarding", "Compliance", "Leasing", "Maintenance", "Operations", "Safety", "Financial", "Management"];
+  const [form, setForm] = useState({ name: item?.name || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999 });
+  const [saving, setSaving] = useState(false);
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const handleSave = async () => {
+    if (!form.name.trim()) return alert("Course name is required.");
+    setSaving(true);
+    const fields = { Title: form.name.trim(), CourseDescription: form.description, Category: form.category, DurationMin: parseInt(form.durationMin,10)||0, RecertDays: parseInt(form.recertDays,10)||0, PassingScore: parseInt(form.passingScore,10)||80, SortOrder: parseInt(form.sortOrder,10)||999, CourseActive: true };
+    try {
+      if (isLive) {
+        const token = await getToken();
+        if (isEdit) { await spUpdate(token, CONFIG.lists.courses, item.id, fields); setCourses(prev => prev.map(c => c.id === item.id ? { ...c, name: fields.Title, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder } : c)); }
+        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder }].sort((a,b) => a.sortOrder - b.sortOrder)); }
+      }
+      onClose();
+    } catch (err) { alert("Save failed: " + err.message); }
+    setSaving(false);
+  };
+  const handleDeactivate = async () => {
+    if (!confirm(`Deactivate course "${form.name}"?`)) return;
+    setSaving(true);
+    try { if (isLive) { const token = await getToken(); await spUpdate(token, CONFIG.lists.courses, item.id, { CourseActive: false }); } setCourses(prev => prev.filter(c => c.id !== item.id)); onClose(); } catch (err) { alert("Failed: " + err.message); }
+    setSaving(false);
+  };
+  return (
+    <Modal title={isEdit ? `Edit Course — ${item.name}` : "Add Course"} onClose={onClose}>
+      <FormField label="Course Name"><input style={S.input} value={form.name} onChange={e => set("name", e.target.value)} /></FormField>
+      <FormField label="Description"><textarea style={{ ...S.input, minHeight: 60 }} value={form.description} onChange={e => set("description", e.target.value)} /></FormField>
+      <FormRow><FormField label="Category"><select style={S.select} value={form.category} onChange={e => set("category", e.target.value)}>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select></FormField><FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField></FormRow>
+      <FormRow><FormField label="Passing Score (%)" hint="Leave at 80 for default"><input style={S.input} type="number" value={form.passingScore} onChange={e => set("passingScore", e.target.value)} /></FormField><FormField label="Recert Period (days)" hint="0 or blank = no recert"><input style={S.input} type="number" value={form.recertDays} onChange={e => set("recertDays", e.target.value)} placeholder="e.g. 365" /></FormField></FormRow>
+      <FormField label="Sort Order" hint="Lower = first"><input style={S.input} type="number" value={form.sortOrder} onChange={e => set("sortOrder", e.target.value)} /></FormField>
+      <SaveBar saving={saving} onSave={handleSave} onCancel={onClose} onDelete={isEdit ? handleDeactivate : null} deleteLabel="Deactivate Course" />
+    </Modal>
+  );
+}
+
+// ── LEARNING PATH FORM ──
+function PathForm({ item, onClose }) {
+  const { courses, setLearningPaths, isLive, getToken } = useData();
+  const isEdit = !!item;
+  const allRoles = ["All","Property Manager","Leasing Agent","Maintenance Technician","Service Manager","Area Director","Virtual Assistant"];
+  const [form, setForm] = useState({ name: item?.name||"", description: item?.description||"", roles: item?.roles||["All"], courseIds: item?.courseIds||[], required: item?.required!==false, recertDays: item?.recertDays||"", dueDays: item?.dueDays||"" });
+  const [saving, setSaving] = useState(false);
+  const set = (k,v) => setForm(p => ({...p,[k]:v}));
+  const toggleRole = (role) => { if (role==="All"){set("roles",form.roles.includes("All")?[]:["All"]);return;} let next=form.roles.filter(r=>r!=="All"); next=next.includes(role)?next.filter(r=>r!==role):[...next,role]; set("roles",next.length===0?["All"]:next); };
+  const toggleCourse = (cid) => { set("courseIds", form.courseIds.includes(cid)?form.courseIds.filter(c=>c!==cid):[...form.courseIds,cid]); };
+  const handleSave = async () => {
+    if (!form.name.trim()) return alert("Path name is required.");
+    if (form.courseIds.length===0) return alert("Select at least one course.");
+    setSaving(true);
+    const fields = { Title: form.name.trim(), PathDescription: form.description, Roles: form.roles.join(","), CourseIDs: form.courseIds.join(","), Required: form.required, PathRecertDays: parseInt(form.recertDays,10)||0, DueDays: parseInt(form.dueDays,10)||0, PathActive: true };
+    try {
+      if (isLive) {
+        const token = await getToken();
+        if (isEdit) { await spUpdate(token, CONFIG.lists.paths, item.id, fields); setLearningPaths(prev => prev.map(p => p.id===item.id ? {...p, name:fields.Title, description:fields.PathDescription, roles:form.roles, courseIds:form.courseIds, required:fields.Required, recertDays:fields.PathRecertDays||null, dueDays:fields.DueDays||null} : p)); }
+        else { const res = await spCreate(token, CONFIG.lists.paths, fields); setLearningPaths(prev => [...prev, {id:String(res.id), name:fields.Title, description:fields.PathDescription, roles:form.roles, courseIds:form.courseIds, required:fields.Required, recertDays:fields.PathRecertDays||null, dueDays:fields.DueDays||null}]); }
+      }
+      onClose();
+    } catch (err) { alert("Save failed: " + err.message); }
+    setSaving(false);
+  };
+  const handleDeactivate = async () => {
+    if (!confirm(`Deactivate path "${form.name}"?`)) return;
+    setSaving(true);
+    try { if (isLive) { const token = await getToken(); await spUpdate(token, CONFIG.lists.paths, item.id, { PathActive: false }); } setLearningPaths(prev => prev.filter(p => p.id!==item.id)); onClose(); } catch (err) { alert("Failed: " + err.message); }
+    setSaving(false);
+  };
+  return (
+    <Modal title={isEdit ? `Edit Path — ${item.name}` : "Add Learning Path"} onClose={onClose} width={640}>
+      <FormField label="Path Name"><input style={S.input} value={form.name} onChange={e => set("name", e.target.value)} /></FormField>
+      <FormField label="Description"><textarea style={{...S.input,minHeight:60}} value={form.description} onChange={e => set("description", e.target.value)} /></FormField>
+      <FormField label="Assigned Roles" hint="Select which roles this path applies to">
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:4}}>{allRoles.map(role => (
+          <button key={role} onClick={()=>toggleRole(role)} style={{padding:"5px 12px",fontSize:13,borderRadius:9999,cursor:"pointer",fontFamily:"inherit",border:`1px solid ${form.roles.includes(role)?C.teal700:C.gray200}`,background:form.roles.includes(role)?C.teal50:C.white,color:form.roles.includes(role)?C.teal700:C.gray400,fontWeight:form.roles.includes(role)?600:400}}>{form.roles.includes(role)?"✓ ":""}{role}</button>
+        ))}</div>
+      </FormField>
+      <FormField label="Courses in Path" hint={`${form.courseIds.length} selected`}>
+        <div style={{maxHeight:200,overflowY:"auto",border:`1px solid ${C.gray200}`,borderRadius:4,marginTop:4}}>{courses.map(course => (
+          <div key={course.id} onClick={()=>toggleCourse(course.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${C.gray100}`,background:form.courseIds.includes(course.id)?C.teal50:C.white}}>
+            <span style={{width:18,height:18,borderRadius:3,border:`2px solid ${form.courseIds.includes(course.id)?C.teal700:C.gray200}`,background:form.courseIds.includes(course.id)?C.teal700:C.white,color:C.white,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,flexShrink:0}}>{form.courseIds.includes(course.id)?"✓":""}</span>
+            <div><div style={{fontSize:14,fontWeight:500,color:C.teal700}}>{course.name}</div><div style={{fontSize:12,color:C.gray400}}>{course.category} · {course.durationMin} min</div></div>
+          </div>
+        ))}</div>
+      </FormField>
+      <FormRow>
+        <FormField label="Required?"><select style={S.select} value={form.required?"yes":"no"} onChange={e => set("required",e.target.value==="yes")}><option value="yes">Yes — Required for assigned roles</option><option value="no">No — Optional / Voluntary</option></select></FormField>
+        <FormField label="Due Days from Hire" hint="0 or blank = no deadline"><input style={S.input} type="number" value={form.dueDays} onChange={e => set("dueDays", e.target.value)} placeholder="e.g. 30" /></FormField>
+      </FormRow>
+      <FormField label="Recert Period (days)" hint="0 or blank = no recert"><input style={S.input} type="number" value={form.recertDays} onChange={e => set("recertDays", e.target.value)} placeholder="e.g. 365" /></FormField>
+      <SaveBar saving={saving} onSave={handleSave} onCancel={onClose} onDelete={isEdit ? handleDeactivate : null} deleteLabel="Deactivate Path" />
+    </Modal>
+  );
+}
+
+// ── LESSON FORM ──
+function LessonForm({ item, courseId, onClose }) {
+  const { courses, lessons, setLessons, isLive, getToken } = useData();
+  const isEdit = !!item;
+  const [form, setForm] = useState({ title: item?.title||"", courseId: item?.courseId||courseId||"", order: item?.order||(lessons.filter(l=>l.courseId===(item?.courseId||courseId)).length+1), durationMin: item?.durationMin||10, videoUrl: item?.videoUrl||"", documentUrl: item?.documentUrl||"", documentTitle: item?.documentTitle||"" });
+  const [saving, setSaving] = useState(false);
+  const set = (k,v) => setForm(p => ({...p,[k]:v}));
+  const handleSave = async () => {
+    if (!form.title.trim()||!form.courseId) return alert("Title and course are required.");
+    setSaving(true);
+    const fields = { Title: form.title.trim(), CourseIDLookupId: parseInt(form.courseId,10), LessonSortOrder: parseInt(form.order,10)||1, LessonDurationMin: parseInt(form.durationMin,10)||0, DocumentTitle: form.documentTitle };
+    if (form.videoUrl) fields.VideoURL = { Url: form.videoUrl, Description: "" };
+    if (form.documentUrl) fields.DocumentURL = { Url: form.documentUrl, Description: "" };
+    try {
+      if (isLive) {
+        const token = await getToken();
+        if (isEdit) { await spUpdate(token, CONFIG.lists.lessons, item.id, fields); setLessons(prev => prev.map(l => l.id===item.id ? {...l, title:fields.Title, courseId:String(fields.CourseIDLookupId), order:fields.LessonSortOrder, durationMin:fields.LessonDurationMin, videoUrl:form.videoUrl||null, documentUrl:form.documentUrl||null, documentTitle:form.documentTitle||null} : l).sort((a,b)=>a.order-b.order)); }
+        else { const res = await spCreate(token, CONFIG.lists.lessons, fields); setLessons(prev => [...prev, {id:String(res.id), title:fields.Title, courseId:String(fields.CourseIDLookupId), order:fields.LessonSortOrder, durationMin:fields.LessonDurationMin, videoUrl:form.videoUrl||null, documentUrl:form.documentUrl||null, documentTitle:form.documentTitle||null}].sort((a,b)=>a.order-b.order)); }
+      }
+      onClose();
+    } catch (err) { alert("Save failed: " + err.message); }
+    setSaving(false);
+  };
+  const handleDelete = async () => {
+    if (!confirm(`Delete lesson "${form.title}"? This cannot be undone.`)) return;
+    setSaving(true);
+    try { if (isLive) { const token = await getToken(); await spDelete(token, CONFIG.lists.lessons, item.id); } setLessons(prev => prev.filter(l => l.id!==item.id)); onClose(); } catch (err) { alert("Failed: " + err.message); }
+    setSaving(false);
+  };
+  return (
+    <Modal title={isEdit ? `Edit Lesson — ${item.title}` : "Add Lesson"} onClose={onClose}>
+      <FormField label="Lesson Title"><input style={S.input} value={form.title} onChange={e => set("title", e.target.value)} /></FormField>
+      <FormRow><FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></FormField><FormField label="Sort Order"><input style={S.input} type="number" value={form.order} onChange={e => set("order", e.target.value)} /></FormField></FormRow>
+      <FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField>
+      <FormField label="Video URL" hint="YouTube, Vimeo, or direct link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
+      <FormField label="Document URL" hint="PDF, Word doc, or training material"><input style={S.input} type="url" value={form.documentUrl} onChange={e => set("documentUrl", e.target.value)} placeholder="https://..." /></FormField>
+      <FormField label="Document Title" hint="Display name for the link"><input style={S.input} value={form.documentTitle} onChange={e => set("documentTitle", e.target.value)} /></FormField>
+      <SaveBar saving={saving} onSave={handleSave} onCancel={onClose} onDelete={isEdit ? handleDelete : null} deleteLabel="Delete Lesson" />
+    </Modal>
+  );
+}
+
+// ── QUIZ QUESTION FORM ──
+function QuizForm({ item, courseId, onClose }) {
+  const { courses, quizzes, setQuizzes, isLive, getToken } = useData();
+  const isEdit = !!item;
+  const defaultCourseId = isEdit ? Object.keys(quizzes).find(cid => quizzes[cid].questions.some(q => q.id===item.id)) || courseId || "" : courseId || "";
+  const [form, setForm] = useState({ question: item?.question||"", courseId: defaultCourseId, optA: item?.options?.A||"", optB: item?.options?.B||"", optC: item?.options?.C||"", optD: item?.options?.D||"", correct: item?.correct||"A" });
+  const [saving, setSaving] = useState(false);
+  const set = (k,v) => setForm(p => ({...p,[k]:v}));
+  const handleSave = async () => {
+    if (!form.question.trim()||!form.courseId) return alert("Question and course are required.");
+    if (!form.optA||!form.optB) return alert("At least options A and B are required.");
+    setSaving(true);
+    const fields = { Title: form.question.trim(), QuizCourseIDLookupId: parseInt(form.courseId,10), OptionA: form.optA, OptionB: form.optB, OptionC: form.optC, OptionD: form.optD, CorrectAnswer: form.correct, QuizSortOrder: 0 };
+    let savedId = item?.id;
+    try {
+      if (isLive) {
+        const token = await getToken();
+        if (isEdit) { await spUpdate(token, CONFIG.lists.quizzes, item.id, fields); }
+        else { const res = await spCreate(token, CONFIG.lists.quizzes, fields); savedId = String(res.id); }
+      } else { savedId = savedId || "new_" + Date.now(); }
+      setQuizzes(prev => {
+        const next = {...prev}; const cid = String(fields.QuizCourseIDLookupId);
+        const qObj = {id:savedId, question:fields.Title, options:{A:fields.OptionA,B:fields.OptionB,C:fields.OptionC,D:fields.OptionD}, correct:fields.CorrectAnswer};
+        if (!next[cid]) next[cid] = {questions:[]};
+        if (isEdit) { next[cid] = {questions: next[cid].questions.map(q => q.id===item.id ? qObj : q)}; }
+        else { next[cid] = {questions: [...next[cid].questions, qObj]}; }
+        return next;
+      });
+      onClose();
+    } catch (err) { alert("Save failed: " + err.message); }
+    setSaving(false);
+  };
+  const handleDelete = async () => {
+    if (!confirm("Delete this quiz question?")) return;
+    setSaving(true);
+    try {
+      if (isLive) { const token = await getToken(); await spDelete(token, CONFIG.lists.quizzes, item.id); }
+      setQuizzes(prev => { const next = {...prev}; for (const cid of Object.keys(next)) { next[cid] = {questions: next[cid].questions.filter(q => q.id!==item.id)}; } return next; });
+      onClose();
+    } catch (err) { alert("Failed: " + err.message); }
+    setSaving(false);
+  };
+  return (
+    <Modal title={isEdit ? "Edit Quiz Question" : "Add Quiz Question"} onClose={onClose} width={600}>
+      <FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)} disabled={isEdit}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></FormField>
+      <FormField label="Question"><textarea style={{...S.input,minHeight:60}} value={form.question} onChange={e => set("question", e.target.value)} /></FormField>
+      <FormField label="Option A"><input style={S.input} value={form.optA} onChange={e => set("optA", e.target.value)} /></FormField>
+      <FormField label="Option B"><input style={S.input} value={form.optB} onChange={e => set("optB", e.target.value)} /></FormField>
+      <FormField label="Option C"><input style={S.input} value={form.optC} onChange={e => set("optC", e.target.value)} placeholder="Optional" /></FormField>
+      <FormField label="Option D"><input style={S.input} value={form.optD} onChange={e => set("optD", e.target.value)} placeholder="Optional" /></FormField>
+      <FormField label="Correct Answer"><select style={S.select} value={form.correct} onChange={e => set("correct", e.target.value)}>{["A","B","C","D"].map(o => <option key={o} value={o}>{o}{form["opt"+o] ? ` — ${form["opt"+o].substring(0,40)}` : ""}</option>)}</select></FormField>
+      <SaveBar saving={saving} onSave={handleSave} onCancel={onClose} onDelete={isEdit ? handleDelete : null} deleteLabel="Delete Question" />
+    </Modal>
+  );
+}
+
+// ============================================================
+// ============================================================
+// MANAGE VIEW (Admin — Full CRUD)
 // ============================================================
 function ManageView({ mobile }) {
-  const { employees, courses, learningPaths, lessons, quizzes } = useData();
-  const [subTab, setSubTab] = useState("paths");
+  const { employees, courses, learningPaths, lessons, quizzes, isLive, getToken } = useData();
+  const [subTab, setSubTab] = useState("employees");
+  const [modal, setModal] = useState(null);
+  const [expandedCourse, setExpandedCourse] = useState(null);
+  const [showInactive, setShowInactive] = useState(false);
+
+  const closeModal = () => setModal(null);
 
   return (
     <div>
       {/* Sub-tabs */}
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-        {[["paths", "Learning Paths"], ["courses", "Courses"], ["employees", "Employees"], ["config", "Settings"]].map(([key, label]) => (
+        {[["employees", "Employees"], ["paths", "Learning Paths"], ["courses", "Courses"], ["config", "Settings"]].map(([key, label]) => (
           <button
             key={key}
-            onClick={() => setSubTab(key)}
+            onClick={() => { setSubTab(key); setExpandedCourse(null); }}
             style={{
               ...S.btnSecondary,
               ...(subTab === key ? { background: C.teal50, borderColor: C.gold500, color: C.teal700 } : {})
@@ -2643,11 +2931,63 @@ function ManageView({ mobile }) {
         ))}
       </div>
 
+      {/* ── EMPLOYEES TAB ── */}
+      {subTab === "employees" && (
+        <div style={S.card}>
+          <div style={{ ...S.cardTitle, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <span>Employees</span>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <label style={{ fontSize: 12, color: C.gray400, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} /> Show inactive
+              </label>
+              <button style={{ ...S.btnPrimary, ...S.btnSmall }} onClick={() => setModal({ type: "employee" })}>+ Add Employee</button>
+            </div>
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={S.th}>Name</th>
+                {!mobile && <th style={S.th}>Email</th>}
+                <th style={S.th}>Role</th>
+                {!mobile && <th style={S.th}>Reports To</th>}
+                {!mobile && <th style={S.th}>Access</th>}
+                {!mobile && <th style={S.th}>Hire Date</th>}
+                <th style={S.th}>Status</th>
+                <th style={S.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {employees.filter(e => showInactive || e.active).map(emp => {
+                const mgr = employees.find(e => e.id === emp.reportsTo || e.email === emp.reportsTo);
+                const subs = employees.filter(e => e.active && (e.reportsTo === emp.id || e.reportsTo === emp.email));
+                return (
+                  <tr key={emp.id} style={{ opacity: emp.active ? 1 : 0.5 }}>
+                    <td style={{ ...S.td, fontWeight: 500 }}>{emp.name}</td>
+                    {!mobile && <td style={S.td}>{emp.email}</td>}
+                    <td style={S.td}>{emp.role}</td>
+                    {!mobile && <td style={S.td}>{mgr ? mgr.name : "\u2014"}</td>}
+                    {!mobile && <td style={S.td}>
+                      {emp.appRole === "Admin" && <span style={S.badge("warning")}>ADMIN</span>}
+                      {emp.appRole !== "Admin" && subs.length > 0 && <span style={S.badge("info")}>MANAGER ({subs.length})</span>}
+                      {emp.appRole !== "Admin" && subs.length === 0 && <span style={S.badge("neutral")}>EMPLOYEE</span>}
+                    </td>}
+                    {!mobile && <td style={S.td}>{emp.hireDate}</td>}
+                    <td style={S.td}><span style={S.badge(emp.active ? "success" : "neutral")}>{emp.active ? "Active" : "Inactive"}</span></td>
+                    <td style={S.td}><button style={{ ...S.btnSecondary, ...S.btnSmall }} onClick={() => setModal({ type: "employee", item: emp })}>Edit</button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* ── LEARNING PATHS TAB ── */}
       {subTab === "paths" && (
         <div style={S.card}>
           <div style={{ ...S.cardTitle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>Learning Paths</span>
-            <button style={{ ...S.btnPrimary, ...S.btnSmall }}>+ Add Path</button>
+            <button style={{ ...S.btnPrimary, ...S.btnSmall }} onClick={() => setModal({ type: "path" })}>+ Add Path</button>
           </div>
           {learningPaths.map(path => (
             <div key={path.id} style={{ padding: "14px 0", borderBottom: `1px solid ${C.gray100}` }}>
@@ -2662,33 +3002,39 @@ function ManageView({ mobile }) {
                     {path.recertDays && <span style={S.badge("neutral")}>Recert: {path.recertDays}d</span>}
                     {path.dueDays && <span style={S.badge("info")}>Due within {path.dueDays}d of hire</span>}
                   </div>
+                  <div style={{ fontSize: 12, color: C.gray400, marginTop: 6 }}>
+                    Courses: {path.courseIds.map(cid => courses.find(c => c.id === cid)?.name || cid).join(" \u2192 ")}
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button style={{ ...S.btnSecondary, ...S.btnSmall }}>Edit</button>
-                </div>
+                <button style={{ ...S.btnSecondary, ...S.btnSmall }} onClick={() => setModal({ type: "path", item: path })}>Edit</button>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {subTab === "courses" && (
+      {/* ── COURSES TAB ── */}
+      {subTab === "courses" && !expandedCourse && (
         <div style={S.card}>
           <div style={{ ...S.cardTitle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>Courses</span>
-            <button style={{ ...S.btnPrimary, ...S.btnSmall }}>+ Add Course</button>
+            <button style={{ ...S.btnPrimary, ...S.btnSmall }} onClick={() => setModal({ type: "course" })}>+ Add Course</button>
           </div>
           {mobile ? (
-            courses.map(course => (
-              <div key={course.id} style={{ padding: "12px 0", borderBottom: `1px solid ${C.gray100}` }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: C.teal700 }}>{course.name}</div>
-                <div style={{ fontSize: 13, color: C.gray400, marginTop: 2 }}>{course.category} · {course.durationMin} min · {lessons.filter(l => l.courseId === course.id).length} lessons</div>
-                <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                  {course.recertDays && <span style={S.badge("warning")}>Recert: {course.recertDays}d</span>}
-                  <span style={S.badge("neutral")}>{quizzes[course.id]?.questions.length || 0} quiz questions</span>
+            courses.map(course => {
+              const cLessons = lessons.filter(l => l.courseId === course.id);
+              const cQuiz = quizzes[course.id]?.questions || [];
+              return (
+                <div key={course.id} style={{ padding: "12px 0", borderBottom: `1px solid ${C.gray100}`, cursor: "pointer" }} onClick={() => setExpandedCourse(course)}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: C.teal700 }}>{course.name}</div>
+                  <div style={{ fontSize: 13, color: C.gray400, marginTop: 2 }}>{course.category} \u00b7 {course.durationMin} min \u00b7 {cLessons.length} lessons \u00b7 {cQuiz.length} quiz Qs</div>
+                  <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                    {course.recertDays && <span style={S.badge("warning")}>Recert: {course.recertDays}d</span>}
+                    <span style={{ fontSize: 12, color: C.gold500 }}>Tap to manage \u2192</span>
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           ) : (
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
@@ -2703,66 +3049,109 @@ function ManageView({ mobile }) {
                 </tr>
               </thead>
               <tbody>
-                {courses.map(course => (
-                  <tr key={course.id}>
-                    <td style={{ ...S.td, fontWeight: 500 }}>{course.name}</td>
-                    <td style={S.td}>{course.category}</td>
-                    <td style={S.td}>{course.durationMin} min</td>
-                    <td style={S.td}>{lessons.filter(l => l.courseId === course.id).length}</td>
-                    <td style={S.td}>{quizzes[course.id]?.questions.length || 0}</td>
-                    <td style={S.td}>{course.recertDays ? `${course.recertDays}d` : "—"}</td>
-                    <td style={S.td}><button style={{ ...S.btnSecondary, ...S.btnSmall }}>Edit</button></td>
-                  </tr>
-                ))}
+                {courses.map(course => {
+                  const cLessons = lessons.filter(l => l.courseId === course.id);
+                  const cQuiz = quizzes[course.id]?.questions || [];
+                  return (
+                    <tr key={course.id} style={{ cursor: "pointer" }} onClick={() => setExpandedCourse(course)}>
+                      <td style={{ ...S.td, fontWeight: 500, color: C.teal700 }}>{course.name}</td>
+                      <td style={S.td}>{course.category}</td>
+                      <td style={S.td}>{course.durationMin} min</td>
+                      <td style={S.td}>{cLessons.length}</td>
+                      <td style={S.td}>{cQuiz.length}</td>
+                      <td style={S.td}>{course.recertDays ? `${course.recertDays}d` : "\u2014"}</td>
+                      <td style={S.td} onClick={e => e.stopPropagation()}>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button style={{ ...S.btnSecondary, ...S.btnSmall }} onClick={() => setModal({ type: "course", item: course })}>Edit</button>
+                          <button style={{ ...S.btnSecondary, ...S.btnSmall, color: C.teal700 }} onClick={() => setExpandedCourse(course)}>Manage \u2192</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
         </div>
       )}
 
-      {subTab === "employees" && (
-        <div style={S.card}>
-          <div style={{ ...S.cardTitle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span>Employees</span>
-            <button style={{ ...S.btnPrimary, ...S.btnSmall }}>+ Add Employee</button>
-          </div>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                <th style={S.th}>Name</th>
-                {!mobile && <th style={S.th}>Email</th>}
-                <th style={S.th}>Role</th>
-                <th style={S.th}>Reports To</th>
-                {!mobile && <th style={S.th}>Access</th>}
-                {!mobile && <th style={S.th}>Hire Date</th>}
-                <th style={S.th}>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {employees.map(emp => {
-                const mgr = employees.find(e => e.id === emp.reportsTo || e.email === emp.reportsTo);
-                const subs = getSubordinateIds(emp.id, employees);
-                return (
-                  <tr key={emp.id}>
-                    <td style={{ ...S.td, fontWeight: 500 }}>{emp.name}</td>
-                    {!mobile && <td style={S.td}>{emp.email}</td>}
-                    <td style={S.td}>{emp.role}</td>
-                    <td style={S.td}>{mgr ? mgr.name : "\u2014"}</td>
-                    {!mobile && <td style={S.td}>
-                      {emp.appRole === "Admin" && <span style={S.badge("warning")}>ADMIN</span>}
-                      {emp.appRole !== "Admin" && subs.length > 0 && <span style={{ ...S.badge("info") }}>MANAGER ({subs.length})</span>}
-                      {emp.appRole !== "Admin" && subs.length === 0 && <span style={S.badge("neutral")}>EMPLOYEE</span>}
-                    </td>}
-                    {!mobile && <td style={S.td}>{emp.hireDate}</td>}
-                    <td style={S.td}><span style={S.badge(emp.active ? "success" : "neutral")}>{emp.active ? "Active" : "Inactive"}</span></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {/* ── COURSE DRILL-DOWN (Lessons + Quiz Questions) ── */}
+      {subTab === "courses" && expandedCourse && (() => {
+        const course = expandedCourse;
+        const cLessons = lessons.filter(l => l.courseId === course.id).sort((a,b) => a.order - b.order);
+        const cQuiz = quizzes[course.id]?.questions || [];
+        return (
+          <div>
+            <button style={{ ...S.btnSecondary, ...S.btnSmall, marginBottom: 16 }} onClick={() => setExpandedCourse(null)}>{"\u2190"} Back to Courses</button>
+            <div style={{ ...S.card, marginBottom: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: C.teal700 }}>{course.name}</div>
+                  <div style={{ fontSize: 13, color: C.gray400, marginTop: 2 }}>{course.description}</div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                    <span style={S.badge("info")}>{course.category}</span>
+                    <span style={S.badge("neutral")}>{course.durationMin} min</span>
+                    <span style={S.badge("neutral")}>Pass: {course.passingScore}%</span>
+                    {course.recertDays && <span style={S.badge("warning")}>Recert: {course.recertDays}d</span>}
+                  </div>
+                </div>
+                <button style={{ ...S.btnSecondary, ...S.btnSmall }} onClick={() => setModal({ type: "course", item: course })}>Edit Course</button>
+              </div>
+            </div>
 
+            {/* Lessons */}
+            <div style={{ ...S.card, marginBottom: 20 }}>
+              <div style={{ ...S.cardTitle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>Lessons ({cLessons.length})</span>
+                <button style={{ ...S.btnPrimary, ...S.btnSmall }} onClick={() => setModal({ type: "lesson", courseId: course.id })}>+ Add Lesson</button>
+              </div>
+              {cLessons.length === 0 && <div style={{ padding: 16, color: C.gray400, fontSize: 13 }}>No lessons yet. Add one to get started.</div>}
+              {cLessons.map((lesson, idx) => (
+                <div key={lesson.id} style={{ padding: "10px 0", borderBottom: idx < cLessons.length-1 ? `1px solid ${C.gray100}` : "none", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>
+                      <span style={{ color: C.gray300, fontSize: 12, marginRight: 8 }}>#{lesson.order}</span>
+                      {lesson.title}
+                    </div>
+                    <div style={{ fontSize: 12, color: C.gray400, marginTop: 2, display: "flex", gap: 8 }}>
+                      {lesson.durationMin > 0 && <span>{lesson.durationMin} min</span>}
+                      {lesson.videoUrl && <span style={{ color: C.gold500 }}>Video</span>}
+                      {lesson.documentUrl && <span style={{ color: C.gold500 }}>{lesson.documentTitle || "Document"}</span>}
+                    </div>
+                  </div>
+                  <button style={{ ...S.btnSecondary, ...S.btnSmall }} onClick={() => setModal({ type: "lesson", item: lesson, courseId: course.id })}>Edit</button>
+                </div>
+              ))}
+            </div>
+
+            {/* Quiz Questions */}
+            <div style={S.card}>
+              <div style={{ ...S.cardTitle, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>Quiz Questions ({cQuiz.length})</span>
+                <button style={{ ...S.btnPrimary, ...S.btnSmall }} onClick={() => setModal({ type: "quiz", courseId: course.id })}>+ Add Question</button>
+              </div>
+              {cQuiz.length === 0 && <div style={{ padding: 16, color: C.gray400, fontSize: 13 }}>No quiz questions yet. Add at least one for employees to complete this course.</div>}
+              {cQuiz.map((q, idx) => (
+                <div key={q.id} style={{ padding: "10px 0", borderBottom: idx < cQuiz.length-1 ? `1px solid ${C.gray100}` : "none", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{q.question}</div>
+                    <div style={{ fontSize: 12, color: C.gray400, marginTop: 4, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 16px" }}>
+                      {["A","B","C","D"].filter(o => q.options[o]).map(o => (
+                        <div key={o} style={{ color: o === q.correct ? "#2E7D5B" : C.gray400 }}>
+                          {o === q.correct ? "\u2713" : " "} {o}. {q.options[o]}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <button style={{ ...S.btnSecondary, ...S.btnSmall }} onClick={() => setModal({ type: "quiz", item: q, courseId: course.id })}>Edit</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── SETTINGS TAB ── */}
       {subTab === "config" && (
         <div style={S.card}>
           <div style={S.cardTitle}>Training Settings</div>
@@ -2787,25 +3176,19 @@ function ManageView({ mobile }) {
           <div style={{ marginTop: 20, padding: "16px", background: C.teal50, borderRadius: 6 }}>
             <div style={{ fontSize: 14, fontWeight: 600, color: C.teal700, marginBottom: 8 }}>Notification Settings</div>
             <div style={{ fontSize: 13, color: C.gray600, lineHeight: 1.6 }}>
-              Configure Power Automate flows to send automated email reminders:
-            </div>
-            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-              {[
-                "30 days before certification expiry → Employee + Admin",
-                "14 days before certification expiry → Employee + Admin",
-                "Day of expiration → Employee + Admin",
-                "7 days past expiration → Admin escalation",
-                "New hire assigned → Employee welcome + path assignment",
-              ].map((item, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.gray600 }}>
-                  <span style={{ color: C.gold500 }}>●</span> {item}
-                </div>
-              ))}
+              Cert expiration reminders are sent automatically by Power Automate at 30, 14, 7, 3, and 0 days before expiry.
+              Monday manager compliance reports are sent weekly to managers with outstanding items.
             </div>
           </div>
-          <button style={{ ...S.btnPrimary, marginTop: 20 }}>Save Settings</button>
         </div>
       )}
+
+      {/* ── MODALS ── */}
+      {modal?.type === "employee" && <EmployeeForm item={modal.item} onClose={closeModal} />}
+      {modal?.type === "course" && <CourseForm item={modal.item} onClose={closeModal} />}
+      {modal?.type === "path" && <PathForm item={modal.item} onClose={closeModal} />}
+      {modal?.type === "lesson" && <LessonForm item={modal.item} courseId={modal.courseId} onClose={closeModal} />}
+      {modal?.type === "quiz" && <QuizForm item={modal.item} courseId={modal.courseId} onClose={closeModal} />}
     </div>
   );
 }
