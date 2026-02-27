@@ -213,13 +213,10 @@ function normalizePaths(items) {
       let roles = [];
       const rolesRaw = f.Roles;
       if (Array.isArray(rolesRaw)) {
-        roles = rolesRaw;
-      } else if (typeof rolesRaw === "string") {
-        roles = rolesRaw.split(";#").filter(s => s && s !== "#");
-        if (roles.length <= 1 && rolesRaw.includes(",")) {
-          roles = rolesRaw.split(",").map(s => s.trim()).filter(Boolean);
-        }
-        if (roles.length === 0 && rolesRaw.trim()) roles = [rolesRaw.trim()];
+        // If SP returned an array, flatten any comma-separated entries within
+        roles = rolesRaw.flatMap(r => r.split(",").map(s => s.trim())).filter(Boolean);
+      } else if (typeof rolesRaw === "string" && rolesRaw.trim()) {
+        roles = rolesRaw.split(",").map(s => s.trim()).filter(Boolean);
       }
       return {
         id: String(item.id),
@@ -2894,7 +2891,7 @@ function PathForm({ item, onClose }) {
     if (!form.name.trim()) return alert("Path name is required.");
     if (form.courseIds.length===0) return alert("Select at least one course.");
     setSaving(true);
-    const fields = { Title: form.name.trim(), PathDescription: form.description, "Roles@odata.type": "Collection(Edm.String)", Roles: form.roles, CourseIDs: form.courseIds.join(","), Required: form.required, DueDays: parseInt(form.dueDays,10)||0, Active: true };
+    const fields = { Title: form.name.trim(), PathDescription: form.description, Roles: form.roles.join(","), CourseIDs: form.courseIds.join(","), Required: form.required, DueDays: parseInt(form.dueDays,10)||0, Active: true };
     try {
       if (isLive) {
         const token = await getToken();
