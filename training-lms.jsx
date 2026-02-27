@@ -224,7 +224,7 @@ function normalizePaths(items) {
       return {
         id: String(item.id),
         name: f.Title || "",
-        description: f.Description || "",
+        description: f.PathDescription || "",
         roles,
         courseIds,
         required: f.Required !== false,
@@ -2894,12 +2894,12 @@ function PathForm({ item, onClose }) {
     if (!form.name.trim()) return alert("Path name is required.");
     if (form.courseIds.length===0) return alert("Select at least one course.");
     setSaving(true);
-    const fields = { Title: form.name.trim(), Description: form.description, "Roles@odata.type": "Collection(Edm.String)", Roles: form.roles, CourseIDs: form.courseIds.join(","), Required: form.required, DueDays: parseInt(form.dueDays,10)||0, Active: true };
+    const fields = { Title: form.name.trim(), PathDescription: form.description, "Roles@odata.type": "Collection(Edm.String)", Roles: form.roles, CourseIDs: form.courseIds.join(","), Required: form.required, DueDays: parseInt(form.dueDays,10)||0, Active: true };
     try {
       if (isLive) {
         const token = await getToken();
-        if (isEdit) { await spUpdate(token, CONFIG.lists.paths, item.id, fields); setLearningPaths(prev => prev.map(p => p.id===item.id ? {...p, name:fields.Title, description:fields.Description, roles:form.roles, courseIds:form.courseIds, required:fields.Required, dueDays:fields.DueDays||null} : p)); }
-        else { const res = await spCreate(token, CONFIG.lists.paths, fields); setLearningPaths(prev => [...prev, {id:String(res.id), name:fields.Title, description:fields.Description, roles:form.roles, courseIds:form.courseIds, required:fields.Required, dueDays:fields.DueDays||null}]); }
+        if (isEdit) { await spUpdate(token, CONFIG.lists.paths, item.id, fields); setLearningPaths(prev => prev.map(p => p.id===item.id ? {...p, name:fields.Title, description:fields.PathDescription, roles:form.roles, courseIds:form.courseIds, required:fields.Required, dueDays:fields.DueDays||null} : p)); }
+        else { const res = await spCreate(token, CONFIG.lists.paths, fields); setLearningPaths(prev => [...prev, {id:String(res.id), name:fields.Title, description:fields.PathDescription, roles:form.roles, courseIds:form.courseIds, required:fields.Required, dueDays:fields.DueDays||null}]); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
