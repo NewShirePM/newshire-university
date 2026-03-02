@@ -29,9 +29,9 @@ const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
 const SITE_URL = `${GRAPH_BASE}/sites/${CONFIG.siteId}`;
 
 // Global email pause flag — checked by sendEmail before every send
-// Persists in memory; toggled by admin in Settings tab
-let EMAIL_PAUSED = false;
-try { EMAIL_PAUSED = JSON.parse(sessionStorage.getItem("nsu_emails_paused") || "false"); } catch(e) {}
+// DEFAULT: true (paused) during development. Flip to false via Settings tab when ready to go live.
+let EMAIL_PAUSED = true;
+try { const stored = sessionStorage.getItem("nsu_emails_paused"); if (stored !== null) EMAIL_PAUSED = JSON.parse(stored); } catch(e) {}
 
 // ============================================================
 // REACT CONTEXT — All components pull data from here
@@ -3001,9 +3001,9 @@ function LessonForm({ item, courseId, onClose }) {
   const handleSave = async () => {
     if (!form.title.trim()||!form.courseId) return alert("Title and course are required.");
     setSaving(true);
-    const fields = { Title: form.title.trim(), CourseIDLookupId: parseInt(form.courseId,10), LessonSortOrder: parseInt(form.order,10)||1, LessonDurationMin: parseInt(form.durationMin,10)||0, DocumentTitle: form.documentTitle };
-    if (form.videoUrl) fields.VideoURL = { Url: form.videoUrl, Description: "" };
-    if (form.documentUrl) fields.DocumentURL = { Url: form.documentUrl, Description: "" };
+    const fields = { Title: form.title.trim(), CourseIDLookupId: parseInt(form.courseId,10), LessonSortOrder: parseInt(form.order,10)||1, LessonDurationMin: parseInt(form.durationMin,10)||0, DocumentTitle: form.documentTitle || "" };
+    if (form.videoUrl.trim()) fields.VideoURL = form.videoUrl.trim();
+    if (form.documentUrl.trim()) fields.DocumentURL = form.documentUrl.trim();
     try {
       if (isLive) {
         const token = await getToken();
