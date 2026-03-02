@@ -1732,8 +1732,9 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, onUnen
             </div>
             {!isCollapsed && (
               <div style={{ marginTop: 12, marginLeft: 24 }}>
-                {path.courseIds.filter(cid => { const c = courses.find(x => x.id === cid); return !c || courseMatchesRole(c, user.role); }).map(cid => {
+                {path.courseIds.filter(cid => { const c = courses.find(x => x.id === cid); return c && courseMatchesRole(c, user.role); }).map(cid => {
                 const course = courses.find(c => c.id === cid);
+                if (!course) return null;
                 const latest = myCompletions.filter(c => c.courseId === cid && c.status === "passed").sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
                 const certStatus = getCertStatus(latest, course);
                 const failed = myCompletions.find(c => c.courseId === cid && c.status === "failed");
@@ -1847,6 +1848,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, onUnen
 function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit, onBack, mobile }) {
   const { courses, lessons: allLessons, quizzes } = useData();
   const course = courses.find(c => c.id === courseId);
+  if (!course) return <div style={{ padding: 40, textAlign: "center", color: C.gray400 }}>Course not found.</div>;
   const lessons = allLessons.filter(l => l.courseId === courseId).sort((a, b) => a.order - b.order);
   const [watchedLessons, setWatchedLessons] = useState(new Set());
   const [activeLesson, setActiveLesson] = useState(null);
@@ -2047,7 +2049,7 @@ function QuizView({ courseId, user, completions, setCompletions, onQuizSubmit, o
   const [score, setScore] = useState(null);
   const [started, setStarted] = useState(false);
 
-  if (!quiz) return <div style={S.card}><div style={{ color: C.gray400 }}>No quiz available for this course.</div></div>;
+  if (!quiz || !course) return <div style={S.card}><div style={{ color: C.gray400 }}>No quiz available for this course.</div></div>;
 
   const handleSubmit = async () => {
     const total = quiz.questions.length;
@@ -2237,6 +2239,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
     let completed = 0, expired = 0, missing = 0, expiring = 0;
     const courseStatuses = requiredCourses.map(cid => {
       const course = courses.find(c => c.id === cid);
+      if (!course) return null;
       const latest = empCompletions.filter(c => c.courseId === cid && c.status === "passed").sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
       const status = getCertStatus(latest, course);
       if (status === "current") completed++;
@@ -2244,7 +2247,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
       else if (status === "expiring") { expiring++; completed++; }
       else missing++;
       return { course, status, completion: latest };
-    });
+    }).filter(Boolean);
 
     // Due date tracking
     const pathDueStatuses = paths.filter(p => p.required).map(p => {
