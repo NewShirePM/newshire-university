@@ -186,11 +186,13 @@ function normalizeCourses(items) {
   return items
     .map(item => {
       const f = item.fields;
-      // Support legacy CourseActive boolean: if CourseStatus not set, derive from CourseActive
       let status = f.CourseStatus || (f.CourseActive === false ? "Archived" : "Active");
+      const rolesRaw = f.CourseRoles || "";
+      const roles = rolesRaw ? rolesRaw.split(",").map(s => s.trim()).filter(Boolean) : [];
       return {
         id: String(item.id),
         name: f.Title || "",
+        code: f.CourseCode || "",
         description: f.CourseDescription || "",
         category: f.Category || "Onboarding",
         durationMin: f.DurationMin || 0,
@@ -198,6 +200,7 @@ function normalizeCourses(items) {
         passingScore: f.PassingScore || CONFIG.passingScore,
         sortOrder: f.SortOrder || 999,
         status: status,
+        roles: roles, // empty = all roles, populated = only these roles
       };
     })
     .sort((a, b) => a.sortOrder - b.sortOrder);
@@ -454,7 +457,7 @@ function getPathDueDate(path, employee) {
 function getPathDueStatus(path, employee, completions, courses, learningPaths) {
   const dueDate = getPathDueDate(path, employee);
   if (!dueDate) return { dueDate: null, status: null };
-  const progress = getPathProgress(path.id, employee.id, completions, courses, learningPaths);
+  const progress = getPathProgress(path.id, employee.id, completions, courses, learningPaths, employee.role);
   const today = new Date().toISOString().split("T")[0];
   if (progress.pct >= 100) return { dueDate, status: "complete" };
   if (dueDate < today) return { dueDate, status: "overdue" };
@@ -608,6 +611,7 @@ async function runMondayManagerReport(token, employees, completions, courses, le
         for (const cid of path.courseIds) {
           const course = courses.find(c => c.id === cid);
           if (!course || !course.recertDays) continue;
+          if (!courseMatchesRole(course, emp.role)) continue;
           const passing = completions.filter(c => c.employeeId === emp.id && c.courseId === cid && c.status === "passed");
           if (passing.length === 0) continue;
           const latest = passing.sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
@@ -1152,11 +1156,16 @@ function getCertStatus(completion, course) {
   return "current";
 }
 
-function getPathProgress(pathId, employeeId, completions, courses, learningPaths) {
+function getPathProgress(pathId, employeeId, completions, courses, learningPaths, employeeRole) {
   const path = learningPaths.find(p => p.id === pathId);
   if (!path) return { total: 0, completed: 0, pct: 0 };
-  const total = path.courseIds.length;
-  const completed = path.courseIds.filter(cid => {
+  // Filter to courses this employee's role qualifies for
+  const applicableIds = path.courseIds.filter(cid => {
+    const course = courses.find(c => c.id === cid);
+    return course && courseMatchesRole(course, employeeRole);
+  });
+  const total = applicableIds.length;
+  const completed = applicableIds.filter(cid => {
     const comp = completions.filter(c => c.employeeId === employeeId && c.courseId === cid && c.status === "passed");
     if (comp.length === 0) return false;
     const course = courses.find(c => c.id === cid);
@@ -1170,6 +1179,12 @@ function getEmployeePaths(employee, learningPaths) {
   return learningPaths.filter(p =>
     p.roles.includes("All") || p.roles.includes(employee.role)
   );
+}
+
+// Course-level role filtering: empty roles = all roles, populated = only matching roles
+function courseMatchesRole(course, role) {
+  if (!course.roles || course.roles.length === 0) return true;
+  return course.roles.includes(role);
 }
 
 // ============================================================
@@ -1212,9 +1227,14 @@ function ProgressBar({ pct, color = C.success, height = 8, label = true }) {
 // MAIN APP
 // ============================================================
 // Helper: get all required course IDs for an employee based on their learning paths
-function getRequiredCourseIds(employee, learningPaths) {
+function getRequiredCourseIds(employee, learningPaths, courses) {
   const paths = getEmployeePaths(employee, learningPaths);
-  return [...new Set(paths.flatMap(p => p.courseIds))];
+  const allCourseIds = paths.flatMap(p => p.courseIds);
+  // Filter to courses this employee's role qualifies for
+  return [...new Set(allCourseIds.filter(cid => {
+    const course = courses?.find(c => c.id === cid);
+    return !course || courseMatchesRole(course, employee.role);
+  }))];
 }
 
 function App() {
@@ -1568,7 +1588,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, onUnen
   });
 
   const totalRequired = paths.reduce((sum, p) => sum + p.courseIds.length, 0);
-  const totalCompleted = paths.reduce((sum, p) => sum + getPathProgress(p.id, user.id, completions, courses, learningPaths).completed, 0);
+  const totalCompleted = paths.reduce((sum, p) => sum + getPathProgress(p.id, user.id, completions, courses, learningPaths, user.role).completed, 0);
 
   return (
     <div>
@@ -1579,7 +1599,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, onUnen
             <Icons.Alert /> Overdue Training — Immediate Action Required
           </div>
           {overduePaths.map(({ path, dueDate }) => {
-            const progress = getPathProgress(path.id, user.id, completions, courses, learningPaths);
+            const progress = getPathProgress(path.id, user.id, completions, courses, learningPaths, user.role);
             return (
               <div key={path.id} style={{ padding: "8px 0", borderBottom: `1px solid ${C.errorBdr}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
@@ -1599,7 +1619,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, onUnen
             <Icons.Clock /> Training Due This Week
           </div>
           {dueSoonPaths.map(({ path, dueDate }) => {
-            const progress = getPathProgress(path.id, user.id, completions, courses, learningPaths);
+            const progress = getPathProgress(path.id, user.id, completions, courses, learningPaths, user.role);
             return (
               <div key={path.id} style={{ padding: "8px 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontWeight: 500, color: C.teal700 }}>{path.name} — <span style={{ color: C.warning }}>Due {dueDate} · {progress.completed}/{progress.total} complete</span></span>
@@ -1667,7 +1687,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, onUnen
 
       {/* Learning Paths */}
       {paths.map(path => {
-        const progress = getPathProgress(path.id, user.id, completions, courses, learningPaths);
+        const progress = getPathProgress(path.id, user.id, completions, courses, learningPaths, user.role);
         const isCollapsed = collapsedPaths.includes(path.id);
         const { dueDate, status: dueStatus } = getPathDueStatus(path, user, completions, courses, learningPaths);
         return (
@@ -1712,7 +1732,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, onUnen
             </div>
             {!isCollapsed && (
               <div style={{ marginTop: 12, marginLeft: 24 }}>
-                {path.courseIds.map(cid => {
+                {path.courseIds.filter(cid => { const c = courses.find(x => x.id === cid); return !c || courseMatchesRole(c, user.role); }).map(cid => {
                 const course = courses.find(c => c.id === cid);
                 const latest = myCompletions.filter(c => c.courseId === cid && c.status === "passed").sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
                 const certStatus = getCertStatus(latest, course);
@@ -1752,7 +1772,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, onUnen
 
       {/* ── Voluntary Courses ── */}
       {(() => {
-        const requiredCourseIds = getRequiredCourseIds(user, learningPaths);
+        const requiredCourseIds = getRequiredCourseIds(user, learningPaths, courses);
         const myEnrollments = enrollments.filter(e => e.employeeId === user.id && !requiredCourseIds.includes(e.courseId));
         if (myEnrollments.length === 0) return null;
 
@@ -2444,7 +2464,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
 
                 {/* Voluntary Courses for this employee */}
                 {(() => {
-                  const empRequiredIds = getRequiredCourseIds(m.emp, learningPaths);
+                  const empRequiredIds = getRequiredCourseIds(m.emp, learningPaths, courses);
                   const empVoluntary = enrollments.filter(e => e.employeeId === m.emp.id && !empRequiredIds.includes(e.courseId));
                   if (empVoluntary.length === 0) return null;
 
@@ -2499,7 +2519,7 @@ function TrainingLibraryView({ user, completions, enrollments, onEnroll, onUnenr
   const [filterType, setFilterType] = useState("All");
   const [search, setSearch] = useState("");
   const categories = ["All", ...new Set(courses.map(c => c.category))];
-  const requiredCourseIds = getRequiredCourseIds(user, learningPaths);
+  const requiredCourseIds = getRequiredCourseIds(user, learningPaths, courses);
   const myEnrollmentIds = enrollments.filter(e => e.employeeId === user.id).map(e => e.courseId);
 
   const filtered = courses.filter(c => {
@@ -2588,7 +2608,7 @@ function TrainingLibraryView({ user, completions, enrollments, onEnroll, onUnenr
                     onClick={() => course.status !== "Coming Soon" && setView({ type: "course", courseId: course.id })}
                     style={{ cursor: course.status === "Coming Soon" ? "default" : "pointer" }}
                   >
-                    <div style={{ fontSize: 16, fontWeight: 600, color: C.teal700, marginBottom: 6 }}>{course.name}</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: C.teal700, marginBottom: 6 }}>{course.code && <span style={{ fontSize: 12, color: C.gold500, marginRight: 6 }}>{course.code}</span>}{course.name}</div>
                     <div style={{ fontSize: 13, color: C.gray400, marginBottom: 12, lineHeight: 1.4 }}>{course.description}</div>
                   </div>
                 </div>
@@ -2772,9 +2792,13 @@ function CourseForm({ item, onClose }) {
   const isEdit = !!item;
   const wasComingSoon = isEdit && item.status === "Coming Soon";
   const categories = ["Onboarding", "Compliance", "Leasing", "Maintenance", "Operations", "Safety", "Financial", "Management"];
-  const [form, setForm] = useState({ name: item?.name || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999, status: item?.status || "Active" });
+  const defaultRoles = ["Property Manager","Leasing Agent","Maintenance Technician","Service Manager","Area Director","Virtual Assistant"];
+  const employeeRoles = [...new Set(employees.map(e => e.role).filter(Boolean))];
+  const allRoles = [...new Set([...defaultRoles, ...employeeRoles, ...(item?.roles || [])])].sort();
+  const [form, setForm] = useState({ name: item?.name || "", code: item?.code || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999, status: item?.status || "Active", roles: item?.roles || [] });
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const toggleCourseRole = (role) => { set("roles", form.roles.includes(role) ? form.roles.filter(r => r !== role) : [...form.roles, role]); };
 
   // Send "Course Now Available" email to pre-registered and learning path employees
   const sendGoLiveNotifications = async (token, courseId, courseName) => {
@@ -2816,17 +2840,17 @@ function CourseForm({ item, onClose }) {
     if (!form.name.trim()) return alert("Course name is required.");
     const goingLive = wasComingSoon && form.status === "Active";
     setSaving(true);
-    const fields = { Title: form.name.trim(), CourseDescription: form.description, Category: form.category, DurationMin: parseInt(form.durationMin,10)||0, RecertDays: parseInt(form.recertDays,10)||0, PassingScore: parseInt(form.passingScore,10)||80, SortOrder: parseInt(form.sortOrder,10)||999, CourseActive: form.status !== "Archived", CourseStatus: form.status };
+    const fields = { Title: form.name.trim(), CourseCode: form.code.trim(), CourseDescription: form.description, Category: form.category, DurationMin: parseInt(form.durationMin,10)||0, RecertDays: parseInt(form.recertDays,10)||0, PassingScore: parseInt(form.passingScore,10)||80, SortOrder: parseInt(form.sortOrder,10)||999, CourseActive: form.status !== "Archived", CourseStatus: form.status, CourseRoles: form.roles.join(",") };
     try {
       if (isLive) {
         const token = await getToken();
         if (isEdit) {
           await spUpdate(token, CONFIG.lists.courses, item.id, fields);
-          setCourses(prev => prev.map(c => c.id === item.id ? { ...c, name: fields.Title, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus } : c));
+          setCourses(prev => prev.map(c => c.id === item.id ? { ...c, name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles } : c));
           // Fire go-live notifications if status changed from Coming Soon → Active
           if (goingLive) { sendGoLiveNotifications(token, item.id, fields.Title).catch(e => console.error("Go-live notifications failed:", e)); }
         }
-        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus }].sort((a,b) => a.sortOrder - b.sortOrder)); }
+        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles }].sort((a,b) => a.sortOrder - b.sortOrder)); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
@@ -2842,13 +2866,19 @@ function CourseForm({ item, onClose }) {
   return (
     <Modal title={isEdit ? `Edit Course \u2014 ${item.name}` : "Add Course"} onClose={onClose}>
       <FormField label="Course Name"><input style={S.input} value={form.name} onChange={e => set("name", e.target.value)} /></FormField>
+      <FormRow><FormField label="Course Code" hint="e.g. FHC 101, MNT 202"><input style={S.input} value={form.code} onChange={e => set("code", e.target.value)} placeholder="FHC 101" /></FormField><FormField label="Category"><select style={S.select} value={form.category} onChange={e => set("category", e.target.value)}>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select></FormField></FormRow>
       <FormField label="Description"><textarea style={{ ...S.input, minHeight: 60 }} value={form.description} onChange={e => set("description", e.target.value)} /></FormField>
-      <FormRow><FormField label="Category"><select style={S.select} value={form.category} onChange={e => set("category", e.target.value)}>{categories.map(c => <option key={c} value={c}>{c}</option>)}</select></FormField><FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField></FormRow>
-      <FormRow><FormField label="Passing Score (%)" hint="Leave at 80 for default"><input style={S.input} type="number" value={form.passingScore} onChange={e => set("passingScore", e.target.value)} /></FormField><FormField label="Recert Period (days)" hint="0 or blank = no recert"><input style={S.input} type="number" value={form.recertDays} onChange={e => set("recertDays", e.target.value)} placeholder="e.g. 365" /></FormField></FormRow>
-      <FormRow>
-        <FormField label="Sort Order" hint="Lower = first"><input style={S.input} type="number" value={form.sortOrder} onChange={e => set("sortOrder", e.target.value)} /></FormField>
+      <FormRow><FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField><FormField label="Passing Score (%)" hint="Leave at 80 for default"><input style={S.input} type="number" value={form.passingScore} onChange={e => set("passingScore", e.target.value)} /></FormField></FormRow>
+      <FormRow><FormField label="Recert Period (days)" hint="0 or blank = no recert"><input style={S.input} type="number" value={form.recertDays} onChange={e => set("recertDays", e.target.value)} placeholder="e.g. 365" /></FormField><FormField label="Sort Order" hint="Lower = first"><input style={S.input} type="number" value={form.sortOrder} onChange={e => set("sortOrder", e.target.value)} /></FormField></FormRow>
         <FormField label="Status">{wasComingSoon && form.status === "Active" && <div style={{fontSize:12,color:C.gold500,marginBottom:4}}>Changing to Active will notify all pre-registered employees and those with this course in their learning path.</div>}<select style={S.select} value={form.status} onChange={e => set("status", e.target.value)}><option value="Active">Active</option><option value="Coming Soon">Coming Soon</option><option value="Archived">Archived</option></select></FormField>
-      </FormRow>
+      <FormField label="Role Restrictions" hint={form.roles.length === 0 ? "No restrictions \u2014 all roles will see this course" : `${form.roles.length} role${form.roles.length > 1 ? "s" : ""} selected \u2014 only these roles will see this course in their learning path`}>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:4}}>
+          <button onClick={() => set("roles", [])} style={{padding:"5px 12px",fontSize:13,borderRadius:9999,cursor:"pointer",fontFamily:"inherit",border:`1px solid ${form.roles.length===0?C.teal700:C.gray200}`,background:form.roles.length===0?C.teal50:C.white,color:form.roles.length===0?C.teal700:C.gray400,fontWeight:form.roles.length===0?600:400}}>{form.roles.length===0?"\u2713 ":""}All Roles</button>
+          {allRoles.map(role => (
+            <button key={role} onClick={()=>toggleCourseRole(role)} style={{padding:"5px 12px",fontSize:13,borderRadius:9999,cursor:"pointer",fontFamily:"inherit",border:`1px solid ${form.roles.includes(role)?C.teal700:C.gray200}`,background:form.roles.includes(role)?C.teal50:C.white,color:form.roles.includes(role)?C.teal700:C.gray400,fontWeight:form.roles.includes(role)?600:400}}>{form.roles.includes(role)?"\u2713 ":""}{role}</button>
+          ))}
+        </div>
+      </FormField>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, paddingTop: 16, borderTop: `1px solid ${C.gray100}` }}>
         <div style={{ display: "flex", gap: 8 }}>
           {isEdit && <button style={{ ...S.btnSecondary, ...S.btnSmall, color: "#C44B3B", borderColor: "#C44B3B" }} onClick={handleDelete} disabled={saving}>Permanently Delete</button>}
@@ -2926,7 +2956,7 @@ function PathForm({ item, onClose }) {
         <div style={{maxHeight:200,overflowY:"auto",border:`1px solid ${C.gray200}`,borderRadius:4,marginTop:4}}>{courses.filter(c => c.status !== "Archived").map(course => (
           <div key={course.id} onClick={()=>toggleCourse(course.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${C.gray100}`,background:form.courseIds.includes(course.id)?C.teal50:C.white}}>
             <span style={{width:18,height:18,borderRadius:3,border:`2px solid ${form.courseIds.includes(course.id)?C.teal700:C.gray200}`,background:form.courseIds.includes(course.id)?C.teal700:C.white,color:C.white,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,flexShrink:0}}>{form.courseIds.includes(course.id)?"\u2713":""}</span>
-            <div><div style={{fontSize:14,fontWeight:500,color:C.teal700}}>{course.name}</div><div style={{fontSize:12,color:C.gray400}}>{course.category} \u00b7 {course.durationMin} min{course.status === "Coming Soon" ? " \u00b7 Coming Soon" : ""}</div></div>
+            <div><div style={{fontSize:14,fontWeight:500,color:C.teal700}}>{course.code && <span style={{fontSize:12,color:C.gold500,marginRight:6}}>{course.code}</span>}{course.name}</div><div style={{fontSize:12,color:C.gray400}}>{course.category} \u00b7 {course.durationMin} min{course.status === "Coming Soon" ? " \u00b7 Coming Soon" : ""}</div></div>
           </div>
         ))}</div>
       </FormField>
@@ -2977,7 +3007,7 @@ function LessonForm({ item, courseId, onClose }) {
   return (
     <Modal title={isEdit ? `Edit Lesson — ${item.title}` : "Add Lesson"} onClose={onClose}>
       <FormField label="Lesson Title"><input style={S.input} value={form.title} onChange={e => set("title", e.target.value)} /></FormField>
-      <FormRow><FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></FormField><FormField label="Sort Order"><input style={S.input} type="number" value={form.order} onChange={e => set("order", e.target.value)} /></FormField></FormRow>
+      <FormRow><FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{c.code ? `${c.code} — ` : ""}{c.name}</option>)}</select></FormField><FormField label="Sort Order"><input style={S.input} type="number" value={form.order} onChange={e => set("order", e.target.value)} /></FormField></FormRow>
       <FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField>
       <FormField label="Video URL" hint="YouTube, Vimeo, or direct link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
       <FormField label="Document URL" hint="PDF, Word doc, or training material"><input style={S.input} type="url" value={form.documentUrl} onChange={e => set("documentUrl", e.target.value)} placeholder="https://..." /></FormField>
@@ -3180,6 +3210,7 @@ function ManageView({ mobile }) {
               return (
                 <div key={course.id} style={{ padding: "12px 0", borderBottom: `1px solid ${C.gray100}`, cursor: "pointer", opacity: course.status === "Archived" ? 0.5 : 1 }} onClick={() => setExpandedCourse(course)}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    {course.code && <span style={{ fontSize: 12, fontWeight: 600, color: C.gold500 }}>{course.code}</span>}
                     <span style={{ fontSize: 14, fontWeight: 600, color: C.teal700 }}>{course.name}</span>
                     <span style={S.badge(statusBadge)}>{course.status}</span>
                   </div>
@@ -3195,6 +3226,7 @@ function ManageView({ mobile }) {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
+                  <th style={S.th}>Code</th>
                   <th style={S.th}>Course</th>
                   <th style={S.th}>Status</th>
                   <th style={S.th}>Category</th>
@@ -3212,6 +3244,7 @@ function ManageView({ mobile }) {
                   const statusBadge = course.status === "Coming Soon" ? "info" : course.status === "Archived" ? "neutral" : "success";
                   return (
                     <tr key={course.id} style={{ cursor: "pointer", opacity: course.status === "Archived" ? 0.5 : 1 }} onClick={() => setExpandedCourse(course)}>
+                      <td style={{ ...S.td, fontWeight: 500, color: C.gold500, whiteSpace: "nowrap", fontSize: 12 }}>{course.code || "\u2014"}</td>
                       <td style={{ ...S.td, fontWeight: 500, color: C.teal700 }}>{course.name}</td>
                       <td style={S.td}><span style={S.badge(statusBadge)}>{course.status}</span></td>
                       <td style={S.td}>{course.category}</td>
