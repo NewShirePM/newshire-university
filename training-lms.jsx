@@ -1906,25 +1906,36 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
             </div>
             <button onClick={() => setActiveLesson(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.gray400 }}><Icons.X /></button>
           </div>
-          {/* Video placeholder */}
-          <div style={{
-            background: C.dark, borderRadius: 6, height: mobile ? 200 : 360, display: "flex", flexDirection: "column",
-            alignItems: "center", justifyContent: "center", color: C.gray300, marginBottom: 16
-          }}>
-            <Icons.Play />
-            <div style={{ marginTop: 8, fontSize: 14 }}>Video: {activeLesson.title}</div>
-            <div style={{ fontSize: 12, color: C.gray400, marginTop: 4 }}>{activeLesson.durationMin} minutes</div>
-            <div style={{ fontSize: 11, color: C.gray400, marginTop: 12 }}>Connect video hosting (Vimeo, YouTube, SharePoint Stream) to play here</div>
-          </div>
-          {/* Supplemental doc */}
-          {activeLesson.hasDocument && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: C.gold50, borderRadius: 4, border: `1px solid ${C.gold100}` }}>
-              <Icons.Doc />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{activeLesson.docTitle}</div>
-                <div style={{ fontSize: 12, color: C.gray400 }}>Supplemental learning document</div>
+          {/* Video embed */}
+          {activeLesson.videoUrl && (() => {
+            const url = activeLesson.videoUrl;
+            const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&?#]+)/);
+            if (ytMatch) return <div style={{ position: "relative", paddingBottom: mobile ? "56.25%" : "50%", height: 0, borderRadius: 6, overflow: "hidden", marginBottom: 16 }}><iframe src={`https://www.youtube.com/embed/${ytMatch[1]}`} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", border: "none" }} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen /></div>;
+            const vmMatch = url.match(/vimeo\.com\/(\d+)/);
+            if (vmMatch) return <div style={{ position: "relative", paddingBottom: mobile ? "56.25%" : "50%", height: 0, borderRadius: 6, overflow: "hidden", marginBottom: 16 }}><iframe src={`https://player.vimeo.com/video/${vmMatch[1]}`} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", border: "none" }} allow="autoplay; fullscreen; picture-in-picture" allowFullScreen /></div>;
+            if (url.includes("sharepoint.com") || url.includes("microsoftstream.com")) return <div style={{ position: "relative", paddingBottom: mobile ? "56.25%" : "50%", height: 0, borderRadius: 6, overflow: "hidden", marginBottom: 16 }}><iframe src={url.includes("embed") ? url : url.replace("/video/", "/embed/video/")} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", border: "none" }} allowFullScreen /></div>;
+            if (url.match(/\.(mp4|webm|ogg)($|\?)/i)) return <div style={{ borderRadius: 6, overflow: "hidden", marginBottom: 16 }}><video src={url} controls controlsList="nodownload" onContextMenu={e => e.preventDefault()} style={{ width: "100%", maxHeight: mobile ? 240 : 480, background: C.dark }} /></div>;
+            return <div style={{ position: "relative", paddingBottom: mobile ? "56.25%" : "50%", height: 0, borderRadius: 6, overflow: "hidden", marginBottom: 16 }}><iframe src={url} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", border: "none" }} allowFullScreen /></div>;
+          })()}
+          {/* PowerPoint embed */}
+          {activeLesson.documentUrl && (() => {
+            const url = activeLesson.documentUrl;
+            const embedUrl = url.includes("action=") ? url : url.split("?")[0] + "?action=embedview";
+            return (
+              <div style={{ position: "relative", paddingBottom: mobile ? "75%" : "56.25%", height: 0, borderRadius: 6, overflow: "hidden", border: `1px solid ${C.gray200}`, marginBottom: 16 }}>
+                <iframe src={embedUrl} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", border: "none" }} />
               </div>
-              <button style={{ ...S.btnSecondary, ...S.btnSmall }}><Icons.Download /> Download</button>
+            );
+          })()}
+          {/* No content yet */}
+          {!activeLesson.videoUrl && !activeLesson.documentUrl && (
+            <div style={{
+              background: C.dark, borderRadius: 6, height: mobile ? 120 : 180, display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center", color: C.gray300, marginBottom: 16
+            }}>
+              <Icons.Clock />
+              <div style={{ marginTop: 8, fontSize: 14 }}>Content coming soon</div>
+              <div style={{ fontSize: 12, color: C.gray400, marginTop: 4 }}>{activeLesson.durationMin} minutes</div>
             </div>
           )}
           <button
@@ -1970,7 +1981,9 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
                 <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{lesson.title}</div>
                 <div style={{ fontSize: 12, color: C.gray400, display: "flex", gap: 10, marginTop: 2 }}>
                   <span>{lesson.durationMin} min</span>
-                  {lesson.hasDocument && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Doc /> Document attached</span>}
+                  {lesson.videoUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Play /> Video</span>}
+                  {lesson.documentUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Doc /> Slides</span>}
+                  {!lesson.videoUrl && !lesson.documentUrl && <span style={{ color: C.gold500 }}>Content pending</span>}
                 </div>
               </div>
               {isActive ? <span style={{ fontSize: 12, fontWeight: 600, color: C.gold600 }}>PLAYING</span> : <Icons.Play />}
@@ -3012,8 +3025,8 @@ function LessonForm({ item, courseId, onClose }) {
       <FormField label="Lesson Title"><input style={S.input} value={form.title} onChange={e => set("title", e.target.value)} /></FormField>
       <FormRow><FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{c.code ? `${c.code} — ` : ""}{c.name}</option>)}</select></FormField><FormField label="Sort Order"><input style={S.input} type="number" value={form.order} onChange={e => set("order", e.target.value)} /></FormField></FormRow>
       <FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField>
-      <FormField label="Video URL" hint="YouTube, Vimeo, or direct link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
-      <FormField label="Document URL" hint="PDF, Word doc, or training material"><input style={S.input} type="url" value={form.documentUrl} onChange={e => set("documentUrl", e.target.value)} placeholder="https://..." /></FormField>
+      <FormField label="Video URL" hint="YouTube, Vimeo, SharePoint Stream, or direct video link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
+      <FormField label="Presentation URL" hint="SharePoint link to the PowerPoint file"><input style={S.input} type="url" value={form.documentUrl} onChange={e => set("documentUrl", e.target.value)} placeholder="https://vanrockre.sharepoint.com/..." /></FormField>
       <FormField label="Document Title" hint="Display name for the link"><input style={S.input} value={form.documentTitle} onChange={e => set("documentTitle", e.target.value)} /></FormField>
       <SaveBar saving={saving} onSave={handleSave} onCancel={onClose} onDelete={isEdit ? handleDelete : null} deleteLabel="Delete Lesson" />
     </Modal>
