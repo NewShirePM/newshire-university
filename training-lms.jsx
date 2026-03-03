@@ -1,5 +1,8 @@
 const { useState, useEffect, useCallback, useRef, useMemo, createContext, useContext } = React;
 
+// Favicon — gold box with teal "U" for University
+(()=>{const l=document.querySelector("link[rel='icon']")||document.createElement("link");l.rel="icon";l.href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23CDA04B'/><text x='16' y='23' font-family='Georgia,serif' font-size='22' font-weight='bold' fill='%2328434C' text-anchor='middle'>U</text></svg>";document.head.appendChild(l)})();
+
 // ============================================================
 // CONFIG — Update per-app
 // ============================================================
