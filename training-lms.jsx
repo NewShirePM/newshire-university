@@ -1922,13 +1922,34 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
             if (url.match(/\.(mp4|webm|ogg)($|\?)/i)) return <div style={{ borderRadius: 6, overflow: "hidden", marginBottom: 16 }}><video src={url} controls controlsList="nodownload" onContextMenu={e => e.preventDefault()} style={{ width: "100%", maxHeight: mobile ? 240 : 480, background: C.dark }} /></div>;
             return <div style={{ position: "relative", paddingBottom: mobile ? "56.25%" : "50%", height: 0, borderRadius: 6, overflow: "hidden", marginBottom: 16 }}><iframe src={url} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", border: "none" }} allowFullScreen /></div>;
           })()}
-          {/* PowerPoint embed */}
+          {/* PowerPoint — opens in SharePoint viewer (new tab) */}
           {activeLesson.documentUrl && (() => {
             const url = activeLesson.documentUrl;
-            const embedUrl = url.includes("action=embedview") ? url : url + (url.includes("?") ? "&" : "?") + "action=embedview";
+            // Convert any embed URL to interactivepreview for best viewing experience
+            let viewUrl = url;
+            if (url.includes("action=embedview")) viewUrl = url.replace("action=embedview", "action=interactivepreview");
+            else if (url.includes("action=")) viewUrl = url.replace(/action=\w+/, "action=interactivepreview");
+            else viewUrl = url + (url.includes("?") ? "&" : "?") + "action=interactivepreview";
             return (
-              <div style={{ position: "relative", paddingBottom: mobile ? "75%" : "56.25%", height: 0, borderRadius: 6, overflow: "hidden", border: `1px solid ${C.gray200}`, marginBottom: 16 }}>
-                <iframe src={embedUrl} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", border: "none" }} />
+              <div style={{
+                background: `linear-gradient(135deg, ${C.headerBg} 0%, #243F4A 100%)`, borderRadius: 6,
+                padding: mobile ? "28px 20px" : "36px 32px", marginBottom: 16,
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                border: `1px solid ${C.gold500}20`, position: "relative", overflow: "hidden",
+              }}>
+                <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: C.gold500 }} />
+                <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.9 }}>📊</div>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: C.gold500, marginBottom: 4 }}>Course Presentation</div>
+                <div style={{ fontSize: 15, color: "#FFFFFF", fontWeight: 600, marginBottom: 16, textAlign: "center" }}>{activeLesson.title}</div>
+                <button onClick={() => window.open(viewUrl, "_blank")} style={{
+                  display: "inline-flex", alignItems: "center", gap: 8, padding: "12px 28px",
+                  fontSize: 14, fontWeight: 600, fontFamily: "'Source Sans 3',sans-serif",
+                  color: C.headerBg, background: C.gold500, border: "none", borderRadius: 4,
+                  cursor: "pointer", transition: "background 0.2s",
+                }}>
+                  ▶ Open Presentation
+                </button>
+                <div style={{ fontSize: 11, color: C.teal300, marginTop: 10 }}>Opens in SharePoint • {activeLesson.durationMin || "—"} min</div>
               </div>
             );
           })()}
@@ -3044,7 +3065,7 @@ function LessonForm({ item, courseId, onClose }) {
       <FormRow><FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{c.code ? `${c.code} — ` : ""}{c.name}</option>)}</select></FormField><FormField label="Sort Order"><input style={S.input} type="number" value={form.order} onChange={e => set("order", e.target.value)} /></FormField></FormRow>
       <FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField>
       <FormField label="Video URL" hint="YouTube, Vimeo, SharePoint Stream, or direct video link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
-      <FormField label="Presentation URL" hint="SharePoint embed URL for the PowerPoint"><input style={S.input} type="url" value={form.documentUrl} onChange={e => set("documentUrl", e.target.value)} placeholder="https://vanrockre.sharepoint.com/..." /></FormField>
+      <FormField label="Presentation URL" hint="SharePoint file URL — opens in viewer via new tab"><input style={S.input} type="url" value={form.documentUrl} onChange={e => set("documentUrl", e.target.value)} placeholder="https://vanrockre.sharepoint.com/..." /></FormField>
       <FormField label="Document Title" hint="Display name for the presentation"><input style={S.input} value={form.documentTitle} onChange={e => set("documentTitle", e.target.value)} /></FormField>
       <div style={{ borderTop: `1px solid ${C.gray100}`, marginTop: 12, paddingTop: 12 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: C.teal400, marginBottom: 8 }}>Supplemental Download (optional)</div>
