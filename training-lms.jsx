@@ -8,7 +8,7 @@ const CONFIG = {
   tenantId: "33575d04-ca7b-4396-8011-9eaea4030b46",
   siteId: "vanrockre.sharepoint.com,a02c1cd8-9f1f-4827-8286-7b6b7ce74232,01202419-6625-4499-b0d5-8ceb1cffdba3",
   lists: {
-    users:        "TrainingUsers",
+    users:        "Employees",
     courses:      "TrainingCourses",
     paths:        "LearningPaths",
     lessons:      "TrainingLessons",
@@ -173,11 +173,11 @@ function normalizeEmployees(items) {
       id: String(item.id),
       name: f.Title || "",
       email: (f.Email || "").toLowerCase(),
-      role: f.Role || "",
-      appRole: f.AppRole || "Employee",
-      reportsTo: (f.ReportsTo || "").toLowerCase(),
-      hireDate: f.HireDate ? f.HireDate.split("T")[0] : null,
-      active: f.Active !== false,
+      role: f.JobTitle || "",
+      appRole: f.AccessLevel || "Employee",
+      reportsTo: (f.ManagerEmail || "").toLowerCase(),
+      hireDate: f.StartDate ? f.StartDate.split("T")[0] : null,
+      active: f.EmployeeActive !== false,
     };
   });
 }
@@ -244,9 +244,11 @@ function normalizeLessons(items) {
       title: f.Title || "",
       order: f.LessonSortOrder || 1,
       durationMin: f.LessonDurationMin || 0,
-      videoUrl: f.VideoURL?.Url || f.VideoURL || null,
-      documentUrl: f.DocumentURL?.Url || f.DocumentURL || null,
+      videoUrl: f.VideoURL || null,
+      documentUrl: f.DocumentURL || null,
       documentTitle: f.DocumentTitle || null,
+      supplementUrl: f.SupplementURL || null,
+      supplementTitle: f.SupplementTitle || null,
     };
   }).sort((a, b) => a.order - b.order);
 }
@@ -1291,7 +1293,7 @@ function App() {
         const email = account.username.toLowerCase();
         const user = data.employees.find(e => e.email === email);
         if (!user) {
-          setAuthError(`Your email (${email}) was not found in TrainingUsers. Contact your administrator.`);
+          setAuthError(`Your email (${email}) was not found in the Employees list. Contact your administrator.`);
           setAuthState("error");
           return;
         }
@@ -1920,7 +1922,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
           {/* PowerPoint embed */}
           {activeLesson.documentUrl && (() => {
             const url = activeLesson.documentUrl;
-            const embedUrl = url.includes("action=") ? url : url.split("?")[0] + "?action=embedview";
+            const embedUrl = url.includes("action=embedview") ? url : url + (url.includes("?") ? "&" : "?") + "action=embedview";
             return (
               <div style={{ position: "relative", paddingBottom: mobile ? "75%" : "56.25%", height: 0, borderRadius: 6, overflow: "hidden", border: `1px solid ${C.gray200}`, marginBottom: 16 }}>
                 <iframe src={embedUrl} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", border: "none" }} />
@@ -1936,6 +1938,17 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
               <Icons.Clock />
               <div style={{ marginTop: 8, fontSize: 14 }}>Content coming soon</div>
               <div style={{ fontSize: 12, color: C.gray400, marginTop: 4 }}>{activeLesson.durationMin} minutes</div>
+            </div>
+          )}
+          {/* Supplemental download */}
+          {activeLesson.supplementUrl && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: C.gold50, borderRadius: 4, border: `1px solid ${C.gold100}`, marginBottom: 16 }}>
+              <Icons.Doc />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{activeLesson.supplementTitle || "Supplemental Material"}</div>
+                <div style={{ fontSize: 12, color: C.gray400 }}>Worksheet / reference document</div>
+              </div>
+              <a href={activeLesson.supplementUrl} target="_blank" rel="noopener noreferrer" style={{ ...S.btnSecondary, ...S.btnSmall, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}><Icons.Download /> Download</a>
             </div>
           )}
           <button
@@ -1983,6 +1996,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
                   <span>{lesson.durationMin} min</span>
                   {lesson.videoUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Play /> Video</span>}
                   {lesson.documentUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Doc /> Slides</span>}
+                  {lesson.supplementUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Download /> Worksheet</span>}
                   {!lesson.videoUrl && !lesson.documentUrl && <span style={{ color: C.gold500 }}>Content pending</span>}
                 </div>
               </div>
@@ -2753,12 +2767,12 @@ function EmployeeForm({ item, onClose }) {
   const handleSave = async () => {
     if (!form.name.trim() || !form.email.trim()) return alert("Name and email are required.");
     setSaving(true);
-    const fields = { Title: form.name.trim(), Email: form.email.trim().toLowerCase(), Role: form.role, AppRole: form.appRole, ReportsTo: form.reportsTo, HireDate: form.hireDate, Active: form.active };
+    const fields = { Title: form.name.trim(), Email: form.email.trim().toLowerCase(), JobTitle: form.role, AccessLevel: form.appRole, ManagerEmail: form.reportsTo, StartDate: form.hireDate, EmployeeActive: form.active };
     try {
       if (isLive) {
         const token = await getToken();
-        if (isEdit) { await spUpdate(token, CONFIG.lists.users, item.id, fields); setEmployees(prev => prev.map(e => e.id === item.id ? { ...e, name: fields.Title, email: fields.Email, role: fields.Role, appRole: fields.AppRole, reportsTo: fields.ReportsTo.toLowerCase(), hireDate: fields.HireDate, active: fields.Active } : e)); }
-        else { const res = await spCreate(token, CONFIG.lists.users, fields); setEmployees(prev => [...prev, { id: String(res.id), name: fields.Title, email: fields.Email, role: fields.Role, appRole: fields.AppRole, reportsTo: fields.ReportsTo.toLowerCase(), hireDate: fields.HireDate, active: fields.Active }]); }
+        if (isEdit) { await spUpdate(token, CONFIG.lists.users, item.id, fields); setEmployees(prev => prev.map(e => e.id === item.id ? { ...e, name: fields.Title, email: fields.Email, role: fields.JobTitle, appRole: fields.AccessLevel, reportsTo: fields.ManagerEmail.toLowerCase(), hireDate: fields.StartDate, active: fields.EmployeeActive } : e)); }
+        else { const res = await spCreate(token, CONFIG.lists.users, fields); setEmployees(prev => [...prev, { id: String(res.id), name: fields.Title, email: fields.Email, role: fields.JobTitle, appRole: fields.AccessLevel, reportsTo: fields.ManagerEmail.toLowerCase(), hireDate: fields.StartDate, active: fields.EmployeeActive }]); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
@@ -2767,7 +2781,7 @@ function EmployeeForm({ item, onClose }) {
   const handleToggleActive = async () => {
     if (!confirm(`${form.active ? "Deactivate" : "Reactivate"} ${form.name}?`)) return;
     setSaving(true);
-    try { if (isLive) { const token = await getToken(); await spUpdate(token, CONFIG.lists.users, item.id, { Active: !form.active }); } setEmployees(prev => prev.map(e => e.id === item.id ? { ...e, active: !form.active } : e)); onClose(); } catch (err) { alert("Failed: " + err.message); }
+    try { if (isLive) { const token = await getToken(); await spUpdate(token, CONFIG.lists.users, item.id, { EmployeeActive: !form.active }); } setEmployees(prev => prev.map(e => e.id === item.id ? { ...e, active: !form.active } : e)); onClose(); } catch (err) { alert("Failed: " + err.message); }
     setSaving(false);
   };
   const handleDelete = async () => {
@@ -2995,20 +3009,21 @@ function PathForm({ item, onClose }) {
 function LessonForm({ item, courseId, onClose }) {
   const { courses, lessons, setLessons, isLive, getToken } = useData();
   const isEdit = !!item;
-  const [form, setForm] = useState({ title: item?.title||"", courseId: item?.courseId||courseId||"", order: item?.order||(lessons.filter(l=>l.courseId===(item?.courseId||courseId)).length+1), durationMin: item?.durationMin||10, videoUrl: item?.videoUrl||"", documentUrl: item?.documentUrl||"", documentTitle: item?.documentTitle||"" });
+  const [form, setForm] = useState({ title: item?.title||"", courseId: item?.courseId||courseId||"", order: item?.order||(lessons.filter(l=>l.courseId===(item?.courseId||courseId)).length+1), durationMin: item?.durationMin||10, videoUrl: item?.videoUrl||"", documentUrl: item?.documentUrl||"", documentTitle: item?.documentTitle||"", supplementUrl: item?.supplementUrl||"", supplementTitle: item?.supplementTitle||"" });
   const [saving, setSaving] = useState(false);
   const set = (k,v) => setForm(p => ({...p,[k]:v}));
   const handleSave = async () => {
     if (!form.title.trim()||!form.courseId) return alert("Title and course are required.");
     setSaving(true);
-    const fields = { Title: form.title.trim(), CourseIDLookupId: parseInt(form.courseId,10), LessonSortOrder: parseInt(form.order,10)||1, LessonDurationMin: parseInt(form.durationMin,10)||0, DocumentTitle: form.documentTitle || "" };
+    const fields = { Title: form.title.trim(), CourseIDLookupId: parseInt(form.courseId,10), LessonSortOrder: parseInt(form.order,10)||1, LessonDurationMin: parseInt(form.durationMin,10)||0, DocumentTitle: form.documentTitle || "", SupplementTitle: form.supplementTitle || "" };
     if (form.videoUrl.trim()) fields.VideoURL = form.videoUrl.trim();
     if (form.documentUrl.trim()) fields.DocumentURL = form.documentUrl.trim();
+    if (form.supplementUrl.trim()) fields.SupplementURL = form.supplementUrl.trim();
     try {
       if (isLive) {
         const token = await getToken();
-        if (isEdit) { await spUpdate(token, CONFIG.lists.lessons, item.id, fields); setLessons(prev => prev.map(l => l.id===item.id ? {...l, title:fields.Title, courseId:String(fields.CourseIDLookupId), order:fields.LessonSortOrder, durationMin:fields.LessonDurationMin, videoUrl:form.videoUrl||null, documentUrl:form.documentUrl||null, documentTitle:form.documentTitle||null} : l).sort((a,b)=>a.order-b.order)); }
-        else { const res = await spCreate(token, CONFIG.lists.lessons, fields); setLessons(prev => [...prev, {id:String(res.id), title:fields.Title, courseId:String(fields.CourseIDLookupId), order:fields.LessonSortOrder, durationMin:fields.LessonDurationMin, videoUrl:form.videoUrl||null, documentUrl:form.documentUrl||null, documentTitle:form.documentTitle||null}].sort((a,b)=>a.order-b.order)); }
+        if (isEdit) { await spUpdate(token, CONFIG.lists.lessons, item.id, fields); setLessons(prev => prev.map(l => l.id===item.id ? {...l, title:fields.Title, courseId:String(fields.CourseIDLookupId), order:fields.LessonSortOrder, durationMin:fields.LessonDurationMin, videoUrl:form.videoUrl||null, documentUrl:form.documentUrl||null, documentTitle:form.documentTitle||null, supplementUrl:form.supplementUrl||null, supplementTitle:form.supplementTitle||null} : l).sort((a,b)=>a.order-b.order)); }
+        else { const res = await spCreate(token, CONFIG.lists.lessons, fields); setLessons(prev => [...prev, {id:String(res.id), title:fields.Title, courseId:String(fields.CourseIDLookupId), order:fields.LessonSortOrder, durationMin:fields.LessonDurationMin, videoUrl:form.videoUrl||null, documentUrl:form.documentUrl||null, documentTitle:form.documentTitle||null, supplementUrl:form.supplementUrl||null, supplementTitle:form.supplementTitle||null}].sort((a,b)=>a.order-b.order)); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
@@ -3026,8 +3041,13 @@ function LessonForm({ item, courseId, onClose }) {
       <FormRow><FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{c.code ? `${c.code} — ` : ""}{c.name}</option>)}</select></FormField><FormField label="Sort Order"><input style={S.input} type="number" value={form.order} onChange={e => set("order", e.target.value)} /></FormField></FormRow>
       <FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField>
       <FormField label="Video URL" hint="YouTube, Vimeo, SharePoint Stream, or direct video link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
-      <FormField label="Presentation URL" hint="SharePoint link to the PowerPoint file"><input style={S.input} type="url" value={form.documentUrl} onChange={e => set("documentUrl", e.target.value)} placeholder="https://vanrockre.sharepoint.com/..." /></FormField>
-      <FormField label="Document Title" hint="Display name for the link"><input style={S.input} value={form.documentTitle} onChange={e => set("documentTitle", e.target.value)} /></FormField>
+      <FormField label="Presentation URL" hint="SharePoint embed URL for the PowerPoint"><input style={S.input} type="url" value={form.documentUrl} onChange={e => set("documentUrl", e.target.value)} placeholder="https://vanrockre.sharepoint.com/..." /></FormField>
+      <FormField label="Document Title" hint="Display name for the presentation"><input style={S.input} value={form.documentTitle} onChange={e => set("documentTitle", e.target.value)} /></FormField>
+      <div style={{ borderTop: `1px solid ${C.gray100}`, marginTop: 12, paddingTop: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: C.teal400, marginBottom: 8 }}>Supplemental Download (optional)</div>
+        <FormField label="Supplement URL" hint="Direct SharePoint link to worksheet, handout, or reference doc"><input style={S.input} type="url" value={form.supplementUrl} onChange={e => set("supplementUrl", e.target.value)} placeholder="https://vanrockre.sharepoint.com/..." /></FormField>
+        <FormField label="Supplement Title" hint="e.g. Protected Classes Quick Reference"><input style={S.input} value={form.supplementTitle} onChange={e => set("supplementTitle", e.target.value)} /></FormField>
+      </div>
       <SaveBar saving={saving} onSave={handleSave} onCancel={onClose} onDelete={isEdit ? handleDelete : null} deleteLabel="Delete Lesson" />
     </Modal>
   );
