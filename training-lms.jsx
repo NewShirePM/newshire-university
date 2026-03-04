@@ -1864,11 +1864,26 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
   const course = courses.find(c => c.id === courseId);
   if (!course) return <div style={{ padding: 40, textAlign: "center", color: C.gray400 }}>Course not found.</div>;
   const lessons = allLessons.filter(l => l.courseId === courseId).sort((a, b) => a.order - b.order);
-  const [watchedLessons, setWatchedLessons] = useState(new Set());
+  const [watchedLessons, setWatchedLessons] = useState(() => {
+    // Restore from sessionStorage on mount
+    try {
+      const saved = sessionStorage.getItem(`ns_watched_${courseId}_${user?.id}`);
+      if (saved) return new Set(JSON.parse(saved));
+    } catch {}
+    return new Set();
+  });
   const [activeLesson, setActiveLesson] = useState(null);
+  const [showQuiz, setShowQuiz] = useState(false);
   const myAttempts = completions.filter(c => c.employeeId === user.id && c.courseId === courseId);
   const bestPass = myAttempts.filter(c => c.status === "passed").sort((a, b) => b.score - a.score)[0];
-  const allWatched = lessons.every(l => watchedLessons.has(l.id));
+  const allWatched = lessons.length > 0 && lessons.every(l => watchedLessons.has(l.id));
+
+  // Persist watchedLessons to sessionStorage whenever they change
+  useEffect(() => {
+    if (watchedLessons.size > 0 && user?.id) {
+      try { sessionStorage.setItem(`ns_watched_${courseId}_${user.id}`, JSON.stringify([...watchedLessons])); } catch {}
+    }
+  }, [watchedLessons]);
 
   // If previously passed (and not expired), mark all as watched
   useEffect(() => {
@@ -2072,25 +2087,13 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
           </div>
           <button
             disabled={!allWatched}
-            onClick={() => setCompletions(prev => [...prev])} // needed to trigger rerender
+            onClick={() => setShowQuiz(true)}
             style={{ ...S.btnPrimary, opacity: allWatched ? 1 : 0.4, cursor: allWatched ? "pointer" : "not-allowed" }}
-            {...(allWatched ? { onClick: () => { /* navigate to quiz view handled by parent */ } } : {})}
           >
             {bestPass && getCertStatus(bestPass, course) !== "expired" ? "Retake Quiz" : "Start Quiz"}
           </button>
-          {allWatched && (
-            <button
-              onClick={() => {
-                // This sets the view to quiz via a trick — we call the parent
-                // We need to use a workaround since setView isn't directly available here
-                // So we navigate via the completions setter which triggers parent rerender
-                // Actually let's just expose it properly
-              }}
-              style={{ display: "none" }}
-            />
-          )}
         </div>
-        {allWatched && (
+        {allWatched && showQuiz && (
           <div style={{ marginTop: 12 }}>
             <QuizView
               courseId={courseId}
@@ -2099,6 +2102,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
               setCompletions={setCompletions}
               onQuizSubmit={onQuizSubmit}
               inline={true}
+              autoStart={true}
             />
           </div>
         )}
@@ -2110,14 +2114,14 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
 // ============================================================
 // QUIZ VIEW
 // ============================================================
-function QuizView({ courseId, user, completions, setCompletions, onQuizSubmit, onBack, inline = false }) {
+function QuizView({ courseId, user, completions, setCompletions, onQuizSubmit, onBack, inline = false, autoStart = false }) {
   const { courses, quizzes } = useData();
   const quiz = quizzes[courseId];
   const course = courses.find(c => c.id === courseId);
   const [answers, setAnswers] = useState({});
   const [submitted, setSubmitted] = useState(false);
   const [score, setScore] = useState(null);
-  const [started, setStarted] = useState(false);
+  const [started, setStarted] = useState(autoStart);
 
   if (!quiz || !course) return <div style={S.card}><div style={{ color: C.gray400 }}>No quiz available for this course.</div></div>;
 
@@ -2239,17 +2243,19 @@ function QuizView({ courseId, user, completions, setCompletions, onQuizSubmit, o
       </div>
 
       {/* Questions */}
-      {quiz.questions.map((q, qi) => (
+      {quiz.questions.map((q, qi) => {
+        const optionEntries = Array.isArray(q.options) ? q.options.map((o, i) => [String.fromCharCode(65 + i), o]) : Object.entries(q.options);
+        return (
         <div key={q.id} style={{ marginBottom: 24, paddingBottom: 20, borderBottom: `1px solid ${C.gray100}` }}>
           <div style={{ fontSize: 15, fontWeight: 600, color: C.teal700, marginBottom: 12 }}>
-            {qi + 1}. {q.text}
+            {qi + 1}. {q.question || q.text}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {q.options.map((opt, oi) => {
-              const selected = answers[q.id] === oi;
+            {optionEntries.map(([key, text]) => {
+              const selected = answers[q.id] === key;
               return (
                 <label
-                  key={oi}
+                  key={key}
                   style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 6, cursor: "pointer",
                     border: `1px solid ${selected ? C.gold500 : C.gray200}`, background: selected ? C.gold50 : C.white,
@@ -2260,16 +2266,17 @@ function QuizView({ courseId, user, completions, setCompletions, onQuizSubmit, o
                     type="radio"
                     name={q.id}
                     checked={selected}
-                    onChange={() => setAnswers(prev => ({ ...prev, [q.id]: oi }))}
+                    onChange={() => setAnswers(prev => ({ ...prev, [q.id]: key }))}
                     style={{ accentColor: C.gold600 }}
                   />
-                  <span style={{ fontSize: 14, color: C.teal700 }}>{opt}</span>
+                  <span style={{ fontSize: 14, color: C.teal700 }}>{key}. {text}</span>
                 </label>
               );
             })}
           </div>
         </div>
-      ))}
+        );
+      })}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
         <span style={{ fontSize: 13, color: answeredCount < totalQ ? C.warning : C.success }}>
