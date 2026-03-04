@@ -1964,7 +1964,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
               <div style={{ fontSize: 12, color: C.gray400, marginTop: 4 }}>{activeLesson.durationMin} minutes</div>
             </div>
           )}
-          {/* Supplemental document — opens as read-only PDF view */}
+          {/* Supplemental document — opens as read-only view */}
           {activeLesson.supplementUrl && (
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: C.gold50, borderRadius: 4, border: `1px solid ${C.gold100}`, marginBottom: 16 }}>
               <Icons.Doc />
@@ -1974,13 +1974,9 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
               </div>
               <button onClick={() => {
                 let url = activeLesson.supplementUrl;
-                // Force read-only PDF view: convert direct file link to interactivepreview
-                if (url.includes("sharepoint.com") && !url.includes("action=")) {
-                  // Direct file link — convert to Doc.aspx interactivepreview
-                  const encoded = encodeURIComponent(url.replace(/https:\/\/[^\/]+/, "").split("?")[0]);
-                  url = url.split("/sites/")[0] + "/sites/" + url.split("/sites/")[1].split("/")[0] + "/_layouts/15/Doc.aspx?sourcedoc=" + encoded + "&action=interactivepreview";
-                } else if (url.includes("action=")) {
-                  url = url.replace(/action=\w+/, "action=interactivepreview");
+                // Append web=1 to force browser read-only view
+                if (url.includes("sharepoint.com")) {
+                  url = url.split("?")[0] + "?web=1";
                 }
                 window.open(url, "_blank");
               }} style={{ ...S.btnSecondary, ...S.btnSmall, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, border: `1px solid ${C.gold500}`, color: C.gold700 }}>📄 View Document</button>
