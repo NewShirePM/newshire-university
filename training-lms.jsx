@@ -3041,7 +3041,14 @@ function LessonForm({ item, courseId, onClose }) {
     setSaving(true);
     const fields = { Title: form.title.trim(), CourseIDLookupId: parseInt(form.courseId,10), LessonSortOrder: parseInt(form.order,10)||1, LessonDurationMin: parseInt(form.durationMin,10)||0, DocumentTitle: form.documentTitle || "", SupplementTitle: form.supplementTitle || "" };
     if (form.videoUrl.trim()) fields.VideoURL = form.videoUrl.trim();
-    if (form.documentUrl.trim()) fields.DocumentURL = form.documentUrl.trim();
+    if (form.documentUrl.trim()) {
+      // Clean pasted iframe tags and HTML-encoded ampersands
+      let cleanUrl = form.documentUrl.trim();
+      const srcMatch = cleanUrl.match(/src=["']([^"']+)["']/);
+      if (srcMatch) cleanUrl = srcMatch[1];
+      cleanUrl = cleanUrl.replace(/&amp;/g, "&");
+      fields.DocumentURL = cleanUrl;
+    }
     if (form.supplementUrl.trim()) fields.SupplementURL = form.supplementUrl.trim();
     try {
       if (isLive) {
@@ -3065,7 +3072,13 @@ function LessonForm({ item, courseId, onClose }) {
       <FormRow><FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{c.code ? `${c.code} — ` : ""}{c.name}</option>)}</select></FormField><FormField label="Sort Order"><input style={S.input} type="number" value={form.order} onChange={e => set("order", e.target.value)} /></FormField></FormRow>
       <FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField>
       <FormField label="Video URL" hint="YouTube, Vimeo, SharePoint Stream, or direct video link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
-      <FormField label="Presentation URL" hint="SharePoint file URL — opens in viewer via new tab"><input style={S.input} type="url" value={form.documentUrl} onChange={e => set("documentUrl", e.target.value)} placeholder="https://vanrockre.sharepoint.com/..." /></FormField>
+      <FormField label="Presentation URL" hint="Paste the SharePoint embed code or URL — iframe tags and formatting are cleaned automatically"><input style={S.input} value={form.documentUrl} onChange={e => {
+        let v = e.target.value;
+        const srcMatch = v.match(/src=["']([^"']+)["']/);
+        if (srcMatch) v = srcMatch[1];
+        v = v.replace(/&amp;/g, "&");
+        set("documentUrl", v);
+      }} placeholder="Paste embed code or URL from SharePoint..." /></FormField>
       <FormField label="Document Title" hint="Display name for the presentation"><input style={S.input} value={form.documentTitle} onChange={e => set("documentTitle", e.target.value)} /></FormField>
       <div style={{ borderTop: `1px solid ${C.gray100}`, marginTop: 12, paddingTop: 12 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: C.teal400, marginBottom: 8 }}>Supplemental Download (optional)</div>
