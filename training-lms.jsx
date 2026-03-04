@@ -250,8 +250,17 @@ function normalizeLessons(items) {
       videoUrl: f.VideoURL || null,
       documentUrl: f.DocumentURL || null,
       documentTitle: f.DocumentTitle || null,
-      supplementUrl: f.SupplementURL || null,
-      supplementTitle: f.SupplementTitle || null,
+      // Supplements: stored as JSON array in SupplementURL, or legacy single URL
+      supplements: (() => {
+        const raw = f.SupplementURL || "";
+        if (!raw) return [];
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return parsed;
+        } catch {}
+        // Legacy single URL format — wrap in array
+        return [{ title: f.SupplementTitle || "Supplemental Material", url: raw }];
+      })(),
     };
   }).sort((a, b) => a.order - b.order);
 }
@@ -1964,22 +1973,25 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
               <div style={{ fontSize: 12, color: C.gray400, marginTop: 4 }}>{activeLesson.durationMin} minutes</div>
             </div>
           )}
-          {/* Supplemental document — opens as read-only view */}
-          {activeLesson.supplementUrl && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: C.gold50, borderRadius: 4, border: `1px solid ${C.gold100}`, marginBottom: 16 }}>
-              <Icons.Doc />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{activeLesson.supplementTitle || "Supplemental Material"}</div>
-                <div style={{ fontSize: 12, color: C.gray400 }}>Worksheet / reference document</div>
-              </div>
-              <button onClick={() => {
-                let url = activeLesson.supplementUrl;
-                // Append web=1 to force browser read-only view
-                if (url.includes("sharepoint.com")) {
-                  url = url.split("?")[0] + "?web=1";
-                }
-                window.open(url, "_blank");
-              }} style={{ ...S.btnSecondary, ...S.btnSmall, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, border: `1px solid ${C.gold500}`, color: C.gold700 }}>📄 View Document</button>
+          {/* Supplemental documents — opens as read-only view */}
+          {activeLesson.supplements && activeLesson.supplements.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              {activeLesson.supplements.length > 1 && <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: C.gold700, marginBottom: 6 }}>Supplemental Materials</div>}
+              {activeLesson.supplements.map((sup, si) => (
+                <div key={si} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: C.gold50, borderRadius: 4, border: `1px solid ${C.gold100}`, marginBottom: 6 }}>
+                  <Icons.Doc />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{sup.title || "Supplemental Material"}</div>
+                    <div style={{ fontSize: 12, color: C.gray400 }}>Worksheet / reference document</div>
+                  </div>
+                  <button onClick={() => {
+                    let url = sup.url;
+                    if (url.includes("sharepoint.com") && !url.includes("?")) url = url + "?web=1";
+                    else if (url.includes("sharepoint.com") && !url.includes("web=1")) url = url + "&web=1";
+                    window.open(url, "_blank");
+                  }} style={{ ...S.btnSecondary, ...S.btnSmall, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, border: `1px solid ${C.gold500}`, color: C.gold700 }}>📄 View Document</button>
+                </div>
+              ))}
             </div>
           )}
           <button
@@ -2027,7 +2039,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
                   <span>{lesson.durationMin} min</span>
                   {lesson.videoUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Play /> Video</span>}
                   {lesson.documentUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Doc /> Slides</span>}
-                  {lesson.supplementUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Download /> Worksheet</span>}
+                  {lesson.supplements && lesson.supplements.length > 0 && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Download /> {lesson.supplements.length > 1 ? `${lesson.supplements.length} Docs` : "Worksheet"}</span>}
                   {!lesson.videoUrl && !lesson.documentUrl && <span style={{ color: C.gold500 }}>Content pending</span>}
                 </div>
               </div>
@@ -3040,28 +3052,45 @@ function PathForm({ item, onClose }) {
 function LessonForm({ item, courseId, onClose }) {
   const { courses, lessons, setLessons, isLive, getToken } = useData();
   const isEdit = !!item;
-  const [form, setForm] = useState({ title: item?.title||"", courseId: item?.courseId||courseId||"", order: item?.order||(lessons.filter(l=>l.courseId===(item?.courseId||courseId)).length+1), durationMin: item?.durationMin||10, videoUrl: item?.videoUrl||"", documentUrl: item?.documentUrl||"", documentTitle: item?.documentTitle||"", supplementUrl: item?.supplementUrl||"", supplementTitle: item?.supplementTitle||"" });
+  // Initialize supplements from item
+  const initSupplements = () => {
+    if (item?.supplements && item.supplements.length > 0) return item.supplements.map(s => ({...s}));
+    return [];
+  };
+  const [form, setForm] = useState({ title: item?.title||"", courseId: item?.courseId||courseId||"", order: item?.order||(lessons.filter(l=>l.courseId===(item?.courseId||courseId)).length+1), durationMin: item?.durationMin||10, videoUrl: item?.videoUrl||"", documentUrl: item?.documentUrl||"", documentTitle: item?.documentTitle||"" });
+  const [supplements, setSupplements] = useState(initSupplements);
   const [saving, setSaving] = useState(false);
   const set = (k,v) => setForm(p => ({...p,[k]:v}));
+  const addSupplement = () => setSupplements(prev => [...prev, { title: "", url: "" }]);
+  const updateSupplement = (i, k, v) => setSupplements(prev => prev.map((s, idx) => idx === i ? { ...s, [k]: v } : s));
+  const removeSupplement = (i) => setSupplements(prev => prev.filter((_, idx) => idx !== i));
   const handleSave = async () => {
     if (!form.title.trim()||!form.courseId) return alert("Title and course are required.");
     setSaving(true);
-    const fields = { Title: form.title.trim(), CourseIDLookupId: parseInt(form.courseId,10), LessonSortOrder: parseInt(form.order,10)||1, LessonDurationMin: parseInt(form.durationMin,10)||0, DocumentTitle: form.documentTitle || "", SupplementTitle: form.supplementTitle || "" };
+    const fields = { Title: form.title.trim(), CourseIDLookupId: parseInt(form.courseId,10), LessonSortOrder: parseInt(form.order,10)||1, LessonDurationMin: parseInt(form.durationMin,10)||0, DocumentTitle: form.documentTitle || "" };
     if (form.videoUrl.trim()) fields.VideoURL = form.videoUrl.trim();
     if (form.documentUrl.trim()) {
-      // Clean pasted iframe tags and HTML-encoded ampersands
       let cleanUrl = form.documentUrl.trim();
       const srcMatch = cleanUrl.match(/src=["']([^"']+)["']/);
       if (srcMatch) cleanUrl = srcMatch[1];
       cleanUrl = cleanUrl.replace(/&amp;/g, "&");
       fields.DocumentURL = cleanUrl;
     }
-    if (form.supplementUrl.trim()) fields.SupplementURL = form.supplementUrl.trim();
+    // Save supplements as JSON array
+    const validSupps = supplements.filter(s => s.url && s.url.trim());
+    if (validSupps.length > 0) {
+      fields.SupplementURL = JSON.stringify(validSupps.map(s => ({ title: s.title || "Supplemental Material", url: s.url.trim() })));
+      fields.SupplementTitle = validSupps[0].title || "";
+    } else {
+      fields.SupplementURL = "";
+      fields.SupplementTitle = "";
+    }
     try {
       if (isLive) {
         const token = await getToken();
-        if (isEdit) { await spUpdate(token, CONFIG.lists.lessons, item.id, fields); setLessons(prev => prev.map(l => l.id===item.id ? {...l, title:fields.Title, courseId:String(fields.CourseIDLookupId), order:fields.LessonSortOrder, durationMin:fields.LessonDurationMin, videoUrl:form.videoUrl||null, documentUrl:form.documentUrl||null, documentTitle:form.documentTitle||null, supplementUrl:form.supplementUrl||null, supplementTitle:form.supplementTitle||null} : l).sort((a,b)=>a.order-b.order)); }
-        else { const res = await spCreate(token, CONFIG.lists.lessons, fields); setLessons(prev => [...prev, {id:String(res.id), title:fields.Title, courseId:String(fields.CourseIDLookupId), order:fields.LessonSortOrder, durationMin:fields.LessonDurationMin, videoUrl:form.videoUrl||null, documentUrl:form.documentUrl||null, documentTitle:form.documentTitle||null, supplementUrl:form.supplementUrl||null, supplementTitle:form.supplementTitle||null}].sort((a,b)=>a.order-b.order)); }
+        const lessonData = { title: fields.Title, courseId: String(fields.CourseIDLookupId), order: fields.LessonSortOrder, durationMin: fields.LessonDurationMin, videoUrl: form.videoUrl || null, documentUrl: form.documentUrl || null, documentTitle: form.documentTitle || null, supplements: validSupps };
+        if (isEdit) { await spUpdate(token, CONFIG.lists.lessons, item.id, fields); setLessons(prev => prev.map(l => l.id === item.id ? { ...l, ...lessonData } : l).sort((a, b) => a.order - b.order)); }
+        else { const res = await spCreate(token, CONFIG.lists.lessons, fields); setLessons(prev => [...prev, { id: String(res.id), ...lessonData }].sort((a, b) => a.order - b.order)); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
@@ -3088,9 +3117,21 @@ function LessonForm({ item, courseId, onClose }) {
       }} placeholder="Paste embed code or URL from SharePoint..." /></FormField>
       <FormField label="Document Title" hint="Display name for the presentation"><input style={S.input} value={form.documentTitle} onChange={e => set("documentTitle", e.target.value)} /></FormField>
       <div style={{ borderTop: `1px solid ${C.gray100}`, marginTop: 12, paddingTop: 12 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: C.teal400, marginBottom: 8 }}>Supplemental Download (optional)</div>
-        <FormField label="Supplement URL" hint="Direct SharePoint link to worksheet, handout, or reference doc"><input style={S.input} type="url" value={form.supplementUrl} onChange={e => set("supplementUrl", e.target.value)} placeholder="https://vanrockre.sharepoint.com/..." /></FormField>
-        <FormField label="Supplement Title" hint="e.g. Protected Classes Quick Reference"><input style={S.input} value={form.supplementTitle} onChange={e => set("supplementTitle", e.target.value)} /></FormField>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.teal400 }}>Supplemental Documents</div>
+          <button style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 12 }} onClick={addSupplement}>+ Add Document</button>
+        </div>
+        {supplements.length === 0 && <div style={{ fontSize: 13, color: C.gray300, padding: "8px 0" }}>No supplemental documents attached. Click "Add Document" to attach worksheets, handouts, or reference materials.</div>}
+        {supplements.map((sup, i) => (
+          <div key={i} style={{ background: C.gold50, border: `1px solid ${C.gold100}`, borderRadius: 6, padding: "10px 12px", marginBottom: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: C.gold700, textTransform: "uppercase", letterSpacing: "0.05em" }}>Document {i + 1}</span>
+              <button onClick={() => removeSupplement(i)} style={{ background: "none", border: "none", color: C.error, cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+            </div>
+            <FormField label="Title" hint="e.g. Protected Classes Quick Reference"><input style={S.input} value={sup.title} onChange={e => updateSupplement(i, "title", e.target.value)} placeholder="Document title..." /></FormField>
+            <FormField label="URL" hint="Direct SharePoint link to file"><input style={S.input} value={sup.url} onChange={e => updateSupplement(i, "url", e.target.value)} placeholder="https://vanrockre.sharepoint.com/..." /></FormField>
+          </div>
+        ))}
       </div>
       <SaveBar saving={saving} onSave={handleSave} onCancel={onClose} onDelete={isEdit ? handleDelete : null} deleteLabel="Delete Lesson" />
     </Modal>
