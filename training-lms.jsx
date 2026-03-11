@@ -1526,6 +1526,7 @@ function App() {
           <div style={{ marginTop: 16, width: 200, height: 4, background: C.gray100, borderRadius: 2, overflow: "hidden", margin: "16px auto" }}>
             <div style={{ width: "60%", height: "100%", background: C.gold500, borderRadius: 2, animation: "pulse 1.5s ease-in-out infinite" }} />
           </div>
+          <div style={{ position: "fixed", bottom: 16, left: 0, right: 0, textAlign: "center", fontSize: 11, color: C.gray300 }}>2025 · This application is the intellectual property of NewShire Property Management. Reproduction or use without written permission is prohibited.</div>
         </div>
       </div>
     );
@@ -1810,7 +1811,9 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, onUnen
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                {progress.pct === 100 ? (
+                {progress.total === 0 ? (
+                  <span style={{ ...S.badge("warning"), background: "#FFF8E8", color: "#B8860B" }}>COMING SOON</span>
+                ) : progress.pct === 100 ? (
                   <span style={S.badge("success")}>✓ Complete</span>
                 ) : (
                   <span style={S.badge("warning")}>{progress.completed}/{progress.total} Courses</span>
@@ -1818,7 +1821,9 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, onUnen
               </div>
             </div>
             <div style={{ marginTop: 8, marginLeft: 24 }}>
-              <ProgressBar pct={progress.pct} />
+              {progress.total > 0 ? <ProgressBar pct={progress.pct} /> : (
+                <div style={{ fontSize: 13, color: C.gold700, fontStyle: "italic", padding: "4px 0" }}>Courses for this path are being developed and will appear here when published.</div>
+              )}
             </div>
             {!isCollapsed && (
               <div style={{ marginTop: 12, marginLeft: 24 }}>
@@ -2380,7 +2385,8 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
   const [expandedEmp, setExpandedEmp] = useState(null);
 
   // Scope: Admin sees all active employees (except themselves). Manager sees only their subordinates.
-  const scopedEmployees = employees.filter(e => e.active && visibleEmployeeIds.includes(e.id));
+  // Exclude training-exempt roles (Owner/Operator) from compliance tracking
+  const scopedEmployees = employees.filter(e => e.active && visibleEmployeeIds.includes(e.id) && !isTrainingExempt(e));
   const roles = ["All", ...new Set(scopedEmployees.map(e => e.role))];
 
   // Build compliance matrix from scoped employees only
@@ -2979,10 +2985,24 @@ function CourseForm({ item, onClose }) {
     for (const emp of allRecipients) {
       const isPreReg = preRegistered.some(pr => pr.id === emp.id);
       const empPaths = pathsWithCourse.filter(p => p.roles.includes("All") || p.roles.includes(emp.role));
+      const exempt = isTrainingExempt(emp);
+      // Calculate due date for this course based on the first matching required path
+      let dueLine = "";
+      if (!exempt && empPaths.length > 0) {
+        const requiredPath = empPaths.find(p => p.required && p.dueDays);
+        if (requiredPath && emp.hireDate) {
+          const course = courses.find(c => c.id === courseId);
+          if (course) {
+            const dueDate = getCourseDueDate(course, requiredPath, emp);
+            if (dueDate) dueLine = `<p>This course is due by <strong>${new Date(dueDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</strong>.</p>`;
+          }
+        }
+      }
       const bodyHtml = `<p>Hi ${emp.name.split(" ")[0]},</p>` +
         `<p><strong>${courseName}</strong> is now available in NewShire University!</p>` +
         (isPreReg ? `<p>You pre-registered for this course and it's now ready for you to begin.</p>` : "") +
         (empPaths.length > 0 ? `<p>This course is part of your ${empPaths.map(p=>p.name).join(", ")} learning path${empPaths.length>1?"s":""}.</p>` : "") +
+        dueLine +
         `<p>Log in to NewShire University to start the course.</p>`;
       try {
         await sendEmail(token, emp.email, `Course Now Available: ${courseName}`, emailTemplate(bodyHtml, `Course Now Available: ${courseName}`));
@@ -3608,6 +3628,11 @@ function ManageView({ mobile }) {
           </div>
         </div>
       )}
+
+      {/* ── FOOTER ── */}
+      <div style={{ textAlign: "center", padding: "24px 20px 16px", fontSize: 11, color: C.gray300, borderTop: `1px solid ${C.gray100}`, marginTop: 24 }}>
+        2025 · This application is the intellectual property of NewShire Property Management. Reproduction or use without written permission is prohibited.
+      </div>
 
       {/* ── MODALS ── */}
       {modal?.type === "employee" && <EmployeeForm item={modal.item} onClose={closeModal} />}
