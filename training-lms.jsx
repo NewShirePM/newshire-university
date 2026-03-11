@@ -491,6 +491,18 @@ function getPathDueStatus(path, employee, completions, courses, learningPaths) {
   const today = new Date().toISOString().split("T")[0];
   if (!path.dueDays || !employee.hireDate) return { dueDate: null, status: null };
 
+  // Exempt roles have no deadlines
+  if (isTrainingExempt(employee)) return { dueDate: null, status: null };
+
+  // Only count Active courses that match this employee's role
+  const applicableCourseIds = (path.courseIds || []).filter(cid => {
+    const course = courses.find(c => c.id === cid);
+    return course && course.status === "Active" && courseMatchesRole(course, employee.role);
+  });
+
+  // No active courses in this path yet — nothing to be overdue on
+  if (applicableCourseIds.length === 0) return { dueDate: null, status: null };
+
   const progress = getPathProgress(path.id, employee.id, completions, courses, learningPaths, employee.role);
   const pathDueDate = getPathDueDate(path, employee, courses);
   if (!pathDueDate) return { dueDate: null, status: null };
@@ -498,24 +510,17 @@ function getPathDueStatus(path, employee, completions, courses, learningPaths) {
   // Complete — no deadline concerns
   if (progress.pct >= 100) return { dueDate: pathDueDate, status: "complete" };
 
-  // Check if any INCOMPLETE courses are actually past their individual due dates
-  const applicableCourseIds = (path.courseIds || []).filter(cid => {
-    const course = courses.find(c => c.id === cid);
-    return course && courseMatchesRole(course, employee.role);
-  });
-
+  // Check if any INCOMPLETE Active courses are actually past their individual due dates
   let hasOverdueCourse = false;
   let earliestOverdueCourseDate = null;
 
   for (const cid of applicableCourseIds) {
-    // Check if this course is already completed
     const comp = completions.filter(c => c.employeeId === employee.id && c.courseId === cid && c.status === "passed");
     const course = courses.find(c => c.id === cid);
     if (comp.length > 0) {
       const latest = comp.sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
-      if (getCertStatus(latest, course) !== "expired") continue; // completed and current, skip
+      if (getCertStatus(latest, course) !== "expired") continue;
     }
-    // Not completed — check its due date
     const courseDue = getCourseDueDate(course, path, employee);
     if (courseDue && courseDue < today) {
       hasOverdueCourse = true;
@@ -1236,12 +1241,13 @@ function getCertStatus(completion, course) {
 function getPathProgress(pathId, employeeId, completions, courses, learningPaths, employeeRole) {
   const path = learningPaths.find(p => p.id === pathId);
   if (!path) return { total: 0, completed: 0, pct: 0 };
-  // Filter to courses this employee's role qualifies for
+  // Filter to Active courses this employee's role qualifies for
   const applicableIds = path.courseIds.filter(cid => {
     const course = courses.find(c => c.id === cid);
-    return course && courseMatchesRole(course, employeeRole);
+    return course && course.status === "Active" && courseMatchesRole(course, employeeRole);
   });
   const total = applicableIds.length;
+  if (total === 0) return { total: 0, completed: 0, pct: 100 }; // No active courses = nothing to do = complete
   const completed = applicableIds.filter(cid => {
     const comp = completions.filter(c => c.employeeId === employeeId && c.courseId === cid && c.status === "passed");
     if (comp.length === 0) return false;
@@ -1249,13 +1255,20 @@ function getPathProgress(pathId, employeeId, completions, courses, learningPaths
     const latest = comp.sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
     return getCertStatus(latest, course) !== "expired";
   }).length;
-  return { total, completed, pct: total > 0 ? Math.round((completed / total) * 100) : 0 };
+  return { total, completed, pct: total > 0 ? Math.round((completed / total) * 100) : 100 };
 }
+
+// Roles exempt from required training deadlines (can still take courses voluntarily)
+const EXEMPT_ROLES = ["Owner/Operator"];
 
 function getEmployeePaths(employee, learningPaths) {
   return learningPaths.filter(p =>
     p.roles.includes("All") || p.roles.includes(employee.role)
   );
+}
+
+function isTrainingExempt(employee) {
+  return EXEMPT_ROLES.includes(employee.role);
 }
 
 // Course-level role filtering: empty roles = all roles, populated = only matching roles
