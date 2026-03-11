@@ -204,6 +204,7 @@ function normalizeCourses(items) {
         sortOrder: f.SortOrder || 999,
         status: status,
         roles: roles, // empty = all roles, populated = only these roles
+        createdDate: item.createdDateTime ? item.createdDateTime.split("T")[0] : null,
       };
     })
     .sort((a, b) => a.sortOrder - b.sortOrder);
@@ -461,23 +462,85 @@ async function logNotification(token, key) {
 // ============================================================
 // DUE DATE UTILITIES
 // ============================================================
-function getPathDueDate(path, employee) {
+// Per-course due date: max(hireDate, courseCreatedDate) + path.dueDays
+// A course that went active after the employee was hired gets its own deadline
+function getCourseDueDate(course, path, employee) {
   if (!path.dueDays || !employee.hireDate) return null;
   const hire = new Date(employee.hireDate);
-  const due = new Date(hire.getTime() + path.dueDays * 86400000);
+  const courseCreated = course.createdDate ? new Date(course.createdDate) : hire;
+  const baseline = hire > courseCreated ? hire : courseCreated;
+  const due = new Date(baseline.getTime() + path.dueDays * 86400000);
   return due.toISOString().split("T")[0];
 }
 
+// Path-level due date: the latest individual course due date in the path
+// This gives a realistic "when should all courses be done" answer
+function getPathDueDate(path, employee, courses) {
+  if (!path.dueDays || !employee.hireDate) return null;
+  const pathCourses = (path.courseIds || []).map(id => courses.find(c => c.id === id)).filter(Boolean);
+  if (pathCourses.length === 0) return null;
+  let latestDue = null;
+  for (const course of pathCourses) {
+    const d = getCourseDueDate(course, path, employee);
+    if (d && (!latestDue || d > latestDue)) latestDue = d;
+  }
+  return latestDue;
+}
+
 function getPathDueStatus(path, employee, completions, courses, learningPaths) {
-  const dueDate = getPathDueDate(path, employee);
-  if (!dueDate) return { dueDate: null, status: null };
-  const progress = getPathProgress(path.id, employee.id, completions, courses, learningPaths, employee.role);
   const today = new Date().toISOString().split("T")[0];
-  if (progress.pct >= 100) return { dueDate, status: "complete" };
-  if (dueDate < today) return { dueDate, status: "overdue" };
-  const daysLeft = Math.round((new Date(dueDate) - new Date(today)) / 86400000);
-  if (daysLeft <= 7) return { dueDate, status: "due-soon" };
-  return { dueDate, status: "on-track" };
+  if (!path.dueDays || !employee.hireDate) return { dueDate: null, status: null };
+
+  const progress = getPathProgress(path.id, employee.id, completions, courses, learningPaths, employee.role);
+  const pathDueDate = getPathDueDate(path, employee, courses);
+  if (!pathDueDate) return { dueDate: null, status: null };
+
+  // Complete — no deadline concerns
+  if (progress.pct >= 100) return { dueDate: pathDueDate, status: "complete" };
+
+  // Check if any INCOMPLETE courses are actually past their individual due dates
+  const applicableCourseIds = (path.courseIds || []).filter(cid => {
+    const course = courses.find(c => c.id === cid);
+    return course && courseMatchesRole(course, employee.role);
+  });
+
+  let hasOverdueCourse = false;
+  let earliestOverdueCourseDate = null;
+
+  for (const cid of applicableCourseIds) {
+    // Check if this course is already completed
+    const comp = completions.filter(c => c.employeeId === employee.id && c.courseId === cid && c.status === "passed");
+    const course = courses.find(c => c.id === cid);
+    if (comp.length > 0) {
+      const latest = comp.sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
+      if (getCertStatus(latest, course) !== "expired") continue; // completed and current, skip
+    }
+    // Not completed — check its due date
+    const courseDue = getCourseDueDate(course, path, employee);
+    if (courseDue && courseDue < today) {
+      hasOverdueCourse = true;
+      if (!earliestOverdueCourseDate || courseDue < earliestOverdueCourseDate) earliestOverdueCourseDate = courseDue;
+    }
+  }
+
+  if (hasOverdueCourse) return { dueDate: earliestOverdueCourseDate, status: "overdue" };
+
+  // Not overdue — check if due soon (any incomplete course due within 7 days)
+  for (const cid of applicableCourseIds) {
+    const comp = completions.filter(c => c.employeeId === employee.id && c.courseId === cid && c.status === "passed");
+    const course = courses.find(c => c.id === cid);
+    if (comp.length > 0) {
+      const latest = comp.sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
+      if (getCertStatus(latest, course) !== "expired") continue;
+    }
+    const courseDue = getCourseDueDate(course, path, employee);
+    if (courseDue) {
+      const daysLeft = Math.round((new Date(courseDue) - new Date(today)) / 86400000);
+      if (daysLeft <= 7) return { dueDate: courseDue, status: "due-soon" };
+    }
+  }
+
+  return { dueDate: pathDueDate, status: "on-track" };
 }
 
 // ============================================================
