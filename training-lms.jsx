@@ -32,9 +32,8 @@ const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
 const SITE_URL = `${GRAPH_BASE}/sites/${CONFIG.siteId}`;
 
 // Global email pause flag — checked by sendEmail before every send
-// DEFAULT: true (paused) during development. Flip to false via Settings tab when ready to go live.
-let EMAIL_PAUSED = true;
-try { const stored = sessionStorage.getItem("nsu_emails_paused"); if (stored !== null) EMAIL_PAUSED = JSON.parse(stored); } catch(e) {}
+// DEFAULT: false (active) for production. Toggle via Settings tab.
+let EMAIL_PAUSED = false;
 
 // ============================================================
 // REACT CONTEXT — All components pull data from here
@@ -339,6 +338,7 @@ async function loadAllData(token) {
   for (const item of configRaw) {
     const f = item.fields;
     if (f.Title === "DefaultPassingScore" && f.Value) CONFIG.passingScore = parseInt(f.Value, 10) || 80;
+    if (f.Title === "EmailsPaused") EMAIL_PAUSED = f.Value === "true";
   }
   return { employees, employeesByEmail, courses, paths, lessons, quizzes, completions, enrollments };
 }
@@ -1559,8 +1559,8 @@ function App() {
   const activeTabName = TABS[tab] || TABS[0];
 
   const complianceEmployeeIds = isAdmin
-    ? employees.filter(e => e.active && e.id !== currentUser.id).map(e => e.id)
-    : subordinateIds;
+    ? employees.filter(e => e.active).map(e => e.id)
+    : [...subordinateIds, currentUser.id];
 
   // ── Context value ──
   const ctx = { employees, setEmployees, courses, setCourses, learningPaths, setLearningPaths, lessons, setLessons, quizzes, setQuizzes, completions, enrollments, isLive, getToken: getToken };
@@ -2399,13 +2399,20 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
     const courseStatuses = requiredCourses.map(cid => {
       const course = courses.find(c => c.id === cid);
       if (!course) return null;
+      if (course.status !== "Active") return null; // Only show Active courses
       const latest = empCompletions.filter(c => c.courseId === cid && c.status === "passed").sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
       const status = getCertStatus(latest, course);
       if (status === "current") completed++;
       else if (status === "expired") expired++;
       else if (status === "expiring") { expiring++; completed++; }
       else missing++;
-      return { course, status, completion: latest };
+      // Calculate due date for incomplete courses
+      let courseDueDate = null;
+      if (status === "none" || status === "expired") {
+        const matchingPath = paths.find(p => p.required && p.dueDays && p.courseIds.includes(cid));
+        if (matchingPath) courseDueDate = getCourseDueDate(course, matchingPath, emp);
+      }
+      return { course, status, completion: latest, dueDate: courseDueDate };
     }).filter(Boolean);
 
     // Due date tracking
@@ -2585,7 +2592,9 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                   Required Courses
                 </div>
                 {mobile ? (
-                  m.courseStatuses.map(cs => (
+                  m.courseStatuses.map(cs => {
+                    const isOverdue = cs.dueDate && cs.dueDate < new Date().toISOString().split("T")[0];
+                    return (
                     <div key={cs.course.id} style={{ padding: "10px 0", borderBottom: `1px solid ${C.gray100}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                       <div>
                         <div style={{ fontSize: 13, fontWeight: 500, color: C.teal700 }}>{cs.course.name}</div>
@@ -2593,10 +2602,16 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                           {cs.completion ? `${cs.completion.score}% · ${cs.completion.completedDate}` : "Not started"}
                           {cs.completion?.certExpires && ` · Exp: ${cs.completion.certExpires}`}
                         </div>
+                        {cs.dueDate && (
+                          <div style={{ fontSize: 11, fontWeight: 600, color: isOverdue ? C.error : C.warning, marginTop: 2 }}>
+                            {isOverdue ? `OVERDUE — was due ${cs.dueDate}` : `Due ${cs.dueDate}`}
+                          </div>
+                        )}
                       </div>
                       {certBadge(cs.status)}
                     </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead>
@@ -2606,20 +2621,25 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                         <th style={{ ...S.th, fontSize: 12 }}>Score</th>
                         <th style={{ ...S.th, fontSize: 12 }}>Completed</th>
                         <th style={{ ...S.th, fontSize: 12 }}>Expires</th>
+                        <th style={{ ...S.th, fontSize: 12 }}>Due</th>
                         <th style={{ ...S.th, fontSize: 12 }}>Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {m.courseStatuses.map(cs => (
+                      {m.courseStatuses.map(cs => {
+                        const isOverdue = cs.dueDate && cs.dueDate < new Date().toISOString().split("T")[0];
+                        return (
                         <tr key={cs.course.id}>
                           <td style={{ ...S.td, fontSize: 13, fontWeight: 500 }}>{cs.course.name}</td>
                           <td style={{ ...S.td, fontSize: 13 }}>{cs.course.category}</td>
                           <td style={{ ...S.td, fontSize: 13 }}>{cs.completion ? `${cs.completion.score}%` : "—"}</td>
                           <td style={{ ...S.td, fontSize: 13 }}>{cs.completion?.completedDate || "—"}</td>
                           <td style={{ ...S.td, fontSize: 13 }}>{cs.completion?.certExpires || "N/A"}</td>
+                          <td style={{ ...S.td, fontSize: 13, color: isOverdue ? C.error : cs.dueDate ? C.warning : C.gray400, fontWeight: cs.dueDate ? 600 : 400 }}>{cs.dueDate || "—"}</td>
                           <td style={S.td}>{certBadge(cs.status)}</td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 )}
@@ -3584,11 +3604,20 @@ function ManageView({ mobile }) {
                 </div>
               </div>
               <button
-                onClick={() => {
+                onClick={async () => {
                   const next = !emailsPaused;
                   setEmailsPaused(next);
                   EMAIL_PAUSED = next;
-                  try { sessionStorage.setItem("nsu_emails_paused", JSON.stringify(next)); } catch(e) {}
+                  // Persist to AppConfig in SharePoint
+                  try {
+                    const token = await getToken();
+                    const existing = await spGet(token, CONFIG.lists.config, { filter: "fields/Title eq 'EmailsPaused'" });
+                    if (existing.length > 0) {
+                      await spUpdate(token, CONFIG.lists.config, existing[0].id, { Value: String(next) });
+                    } else {
+                      await spCreate(token, CONFIG.lists.config, { Title: "EmailsPaused", Value: String(next) });
+                    }
+                  } catch(e) { console.error("Failed to save email pause state:", e); }
                 }}
                 style={{
                   ...S.btnSecondary, ...S.btnSmall, minWidth: 120,
