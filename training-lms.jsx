@@ -205,6 +205,7 @@ function normalizeCourses(items) {
         status: status,
         roles: roles, // empty = all roles, populated = only these roles
         createdDate: item.createdDateTime ? item.createdDateTime.split("T")[0] : null,
+        activatedDate: f.ActivatedDate ? f.ActivatedDate.split("T")[0] : null,
       };
     })
     .sort((a, b) => a.sortOrder - b.sortOrder);
@@ -487,11 +488,13 @@ async function logNotification(token, key) {
 // ============================================================
 // Per-course due date: max(hireDate, courseCreatedDate) + path.dueDays
 // A course that went active after the employee was hired gets its own deadline
+// Uses activatedDate (when course went Active), falls back to createdDate, then hireDate
 function getCourseDueDate(course, path, employee) {
   if (!path.dueDays || !employee.hireDate) return null;
   const hire = new Date(employee.hireDate);
-  const courseCreated = course.createdDate ? new Date(course.createdDate) : hire;
-  const baseline = hire > courseCreated ? hire : courseCreated;
+  const courseBaseline = course.activatedDate ? new Date(course.activatedDate)
+    : course.createdDate ? new Date(course.createdDate) : hire;
+  const baseline = hire > courseBaseline ? hire : courseBaseline;
   const due = new Date(baseline.getTime() + path.dueDays * 86400000);
   return due.toISOString().split("T")[0];
 }
@@ -3024,8 +3027,23 @@ function TrainingLibraryView({ user, completions, enrollments, assignments, onEn
             if (isAdmin) return true;
             return subordinateIds.includes(e.id);
           });
+          // Check if selected employee already has this course pending
+          const selectedEmpData = employees.find(e => e.id === selectedEmp);
+          const hasPendingAssignment = selectedEmp && assignments.some(a => a.employeeId === selectedEmp && a.courseId === assignModal.courseId && a.status === "Assigned");
+          const hasIncompleteInPath = selectedEmp && (() => {
+            const empPaths = getEmployeePaths(selectedEmpData || { role: "" }, learningPaths);
+            return empPaths.some(p => p.courseIds.includes(assignModal.courseId));
+          })();
+          const empCompletions = selectedEmp ? completions.filter(c => c.employeeId === selectedEmp && c.courseId === assignModal.courseId && c.status === "passed") : [];
+          const hasPassedCourse = empCompletions.length > 0;
+          const courseObj = courses.find(c => c.id === assignModal.courseId);
+          const latestPass = empCompletions.sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
+          const certStatus = latestPass ? getCertStatus(latestPass, courseObj) : "none";
+          const isCurrentlyComplete = certStatus === "current" || certStatus === "expiring";
+
           const handleSubmit = async () => {
             if (!selectedEmp) return alert("Please select an employee.");
+            if (hasPendingAssignment && !confirm("This employee already has a pending assignment for this course. Assign again anyway?")) return;
             setSaving(true);
             await onAssign({ employeeId: selectedEmp, courseId: assignModal.courseId, dueDate: dueDate || null, notes });
             setSaving(false);
@@ -3035,12 +3053,37 @@ function TrainingLibraryView({ user, completions, enrollments, assignments, onEn
             <Modal title={`Assign: ${assignModal.courseName}`} onClose={() => setAssignModal(null)}>
               <FormField label="Assign To">
                 <select style={S.select} value={selectedEmp} onChange={e => setSelectedEmp(e.target.value)}>
-                  <option value="">— Select Employee —</option>
+                  <option value="">-- Select Employee --</option>
                   {assignableEmployees.sort((a,b) => a.name.localeCompare(b.name)).map(e => (
-                    <option key={e.id} value={e.id}>{e.name} — {e.role}</option>
+                    <option key={e.id} value={e.id}>{e.name} -- {e.role}</option>
                   ))}
                 </select>
               </FormField>
+              {/* Warnings */}
+              {selectedEmp && hasPendingAssignment && (
+                <div style={{ padding: "10px 14px", background: C.warningBg, border: `1px solid rgba(212,150,10,0.25)`, borderRadius: 6, marginBottom: 8, display: "flex", alignItems: "flex-start", gap: 8 }}>
+                  <Icons.Alert />
+                  <div style={{ fontSize: 13, color: C.warning, fontWeight: 500 }}>
+                    {selectedEmpData?.name} already has a pending assignment for this course. Assigning again will create a duplicate.
+                  </div>
+                </div>
+              )}
+              {selectedEmp && !hasPendingAssignment && hasIncompleteInPath && !isCurrentlyComplete && (
+                <div style={{ padding: "10px 14px", background: C.infoBg, border: `1px solid rgba(74,120,176,0.25)`, borderRadius: 6, marginBottom: 8, display: "flex", alignItems: "flex-start", gap: 8 }}>
+                  <Icons.Clock />
+                  <div style={{ fontSize: 13, color: C.info, fontWeight: 500 }}>
+                    This course is already in {selectedEmpData?.name}'s learning path and has not been completed yet.
+                  </div>
+                </div>
+              )}
+              {selectedEmp && isCurrentlyComplete && (
+                <div style={{ padding: "10px 14px", background: C.successBg, border: `1px solid rgba(45,138,90,0.25)`, borderRadius: 6, marginBottom: 8, display: "flex", alignItems: "flex-start", gap: 8 }}>
+                  <Icons.Check />
+                  <div style={{ fontSize: 13, color: C.success, fontWeight: 500 }}>
+                    {selectedEmpData?.name} has already passed this course (Score: {latestPass?.score}% on {latestPass?.completedDate}). Assigning will require a retake.
+                  </div>
+                </div>
+              )}
               <FormField label="Due Date (optional)" hint="Leave blank for no deadline">
                 <input style={S.input} type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} />
               </FormField>
@@ -3219,18 +3262,22 @@ function CourseForm({ item, onClose }) {
   const handleSave = async () => {
     if (!form.name.trim()) return alert("Course name is required.");
     const goingLive = wasComingSoon && form.status === "Active";
+    // Set ActivatedDate any time course becomes Active and doesn't already have one
+    const needsActivatedDate = form.status === "Active" && (!isEdit || !item.activatedDate);
     setSaving(true);
     const fields = { Title: form.name.trim(), CourseCode: form.code.trim(), CourseDescription: form.description, Category: form.category, DurationMin: parseInt(form.durationMin,10)||0, RecertDays: parseInt(form.recertDays,10)||0, PassingScore: parseInt(form.passingScore,10)||80, SortOrder: parseInt(form.sortOrder,10)||999, CourseActive: form.status !== "Archived", CourseStatus: form.status, CourseRoles: form.roles.join(",") };
+    if (needsActivatedDate) fields.ActivatedDate = new Date().toISOString();
     try {
       if (isLive) {
         const token = await getToken();
         if (isEdit) {
           await spUpdate(token, CONFIG.lists.courses, item.id, fields);
-          setCourses(prev => prev.map(c => c.id === item.id ? { ...c, name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles } : c));
+          const activatedDate = needsActivatedDate ? new Date().toISOString().split("T")[0] : item.activatedDate;
+          setCourses(prev => prev.map(c => c.id === item.id ? { ...c, name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, activatedDate } : c));
           // Fire go-live notifications if status changed from Coming Soon → Active
           if (goingLive) { sendGoLiveNotifications(token, item.id, fields.Title).catch(e => console.error("Go-live notifications failed:", e)); }
         }
-        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles }].sort((a,b) => a.sortOrder - b.sortOrder)); }
+        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, activatedDate: needsActivatedDate ? new Date().toISOString().split("T")[0] : null }].sort((a,b) => a.sortOrder - b.sortOrder)); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
