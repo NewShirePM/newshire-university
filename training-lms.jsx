@@ -2538,7 +2538,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
       else missing++;
       // Calculate due date for incomplete courses
       let courseDueDate = null;
-      if (status === "none" || status === "expired") {
+      if (status === "none" || status === "expired" || status === "incomplete") {
         const matchingPath = paths.find(p => p.required && p.dueDays && p.courseIds.includes(cid));
         if (matchingPath) courseDueDate = getCourseDueDate(course, matchingPath, emp);
       }
