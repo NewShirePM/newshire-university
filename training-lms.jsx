@@ -1322,7 +1322,62 @@ const Icons = {
   Download: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
   BookOpen: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg>,
   Plus: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+  Print: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>,
+  Award: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="7"/><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/></svg>,
 };
+
+// ============================================================
+// CERTIFICATE GENERATOR — opens printable certificate in new window
+// ============================================================
+function printCertificate(employeeName, courseName, courseCode, score, completedDate, certExpires, recertDays) {
+  const expiryLine = certExpires ? `<div style="font-size:13px;color:#7A8585;margin-top:6px;">Valid through ${new Date(certExpires).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}${recertDays ? ` (${recertDays}-day recertification cycle)` : ""}</div>` : "";
+  const html = `<!DOCTYPE html><html><head><title>Certificate - ${courseName}</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  @page { size: landscape; margin: 0; }
+  body { margin: 0; padding: 0; font-family: 'Source Sans 3', sans-serif; background: #F7F8F7; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .cert { width: 10in; height: 7.2in; background: #FFFFFF; position: relative; overflow: hidden; box-shadow: 0 4px 24px rgba(28,55,64,0.12); }
+  .border-outer { position: absolute; inset: 16px; border: 2px solid #CDA04B; }
+  .border-inner { position: absolute; inset: 22px; border: 1px solid #D6E7EC; }
+  .content { position: absolute; inset: 40px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+  .gold-bar { width: 80px; height: 3px; background: #CDA04B; margin: 12px auto; }
+  .corner-tl, .corner-tr, .corner-bl, .corner-br { position: absolute; width: 40px; height: 40px; }
+  .corner-tl { top: 12px; left: 12px; border-top: 3px solid #1C3740; border-left: 3px solid #1C3740; }
+  .corner-tr { top: 12px; right: 12px; border-top: 3px solid #1C3740; border-right: 3px solid #1C3740; }
+  .corner-bl { bottom: 12px; left: 12px; border-bottom: 3px solid #1C3740; border-left: 3px solid #1C3740; }
+  .corner-br { bottom: 12px; right: 12px; border-bottom: 3px solid #1C3740; border-right: 3px solid #1C3740; }
+  @media print { body { background: white; } .cert { box-shadow: none; } }
+</style></head><body>
+<div class="cert">
+  <div class="corner-tl"></div><div class="corner-tr"></div><div class="corner-bl"></div><div class="corner-br"></div>
+  <div class="border-outer"></div><div class="border-inner"></div>
+  <div class="content">
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#CDA04B;margin-bottom:2px;">NewShire Property Management</div>
+    <div style="font-size:26px;font-weight:700;color:#1C3740;letter-spacing:0.04em;">NEWSHIRE UNIVERSITY</div>
+    <div class="gold-bar"></div>
+    <div style="font-size:13px;font-weight:500;color:#7A8585;letter-spacing:0.08em;text-transform:uppercase;margin-top:8px;">Certificate of Completion</div>
+    <div style="font-size:14px;color:#7A8585;margin-top:20px;">This certifies that</div>
+    <div style="font-size:32px;font-weight:700;color:#28434C;margin:8px 0;letter-spacing:0.01em;">${employeeName}</div>
+    <div style="font-size:14px;color:#7A8585;">has successfully completed</div>
+    <div style="font-size:20px;font-weight:600;color:#1C3740;margin:10px 0 4px;">${courseName}</div>
+    ${courseCode ? `<div style="font-size:12px;color:#CDA04B;font-weight:600;letter-spacing:0.06em;">${courseCode}</div>` : ""}
+    <div class="gold-bar"></div>
+    <div style="display:flex;gap:48px;margin-top:16px;align-items:flex-start;">
+      <div><div style="font-size:22px;font-weight:700;color:#28434C;">${score}%</div><div style="font-size:11px;color:#7A8585;text-transform:uppercase;letter-spacing:0.06em;">Score</div></div>
+      <div><div style="font-size:15px;font-weight:600;color:#28434C;">${new Date(completedDate).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</div><div style="font-size:11px;color:#7A8585;text-transform:uppercase;letter-spacing:0.06em;">Date Completed</div></div>
+    </div>
+    ${expiryLine}
+    <div style="margin-top:28px;display:flex;gap:60px;">
+      <div style="text-align:center;"><div style="width:160px;border-bottom:1px solid #D6E7EC;margin-bottom:4px;height:20px;"></div><div style="font-size:11px;color:#7A8585;">Brandy Turner, Training Director</div></div>
+    </div>
+  </div>
+</div>
+<script>window.onload=()=>{window.print();}</script>
+</body></html>`;
+  const w = window.open("", "_blank");
+  w.document.write(html);
+  w.document.close();
+}
 
 // ============================================================
 // PROGRESS BAR COMPONENT
@@ -1986,7 +2041,14 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
                         </div>
                       </div>
                     </div>
-                    <Icons.ChevronRight />
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {(certStatus === "current" || certStatus === "expiring") && latest && (
+                        <button onClick={(e) => { e.stopPropagation(); printCertificate(user.name, course.name, course.code, latest.score, latest.completedDate, latest.certExpires, course.recertDays); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 8px", fontSize: 11, color: C.gold700, borderColor: C.gold500, display: "inline-flex", alignItems: "center", gap: 4 }} title="View Certificate">
+                          <Icons.Award /> Cert
+                        </button>
+                      )}
+                      <Icons.ChevronRight />
+                    </div>
                   </div>
                 );
               })}
@@ -2408,6 +2470,14 @@ function QuizView({ courseId, user, completions, setCompletions, onQuizSubmit, o
               <Icons.RefreshCw /> Retake Quiz
             </button>
           )}
+          {passed && (
+            <button style={{ ...S.btnSecondary, marginTop: 16, color: C.gold700, borderColor: C.gold500 }} onClick={() => {
+              printCertificate(user.name, course.name, course.code, score, new Date().toISOString().split("T")[0],
+                course.recertDays ? new Date(Date.now() + course.recertDays * 86400000).toISOString().split("T")[0] : null, course.recertDays);
+            }}>
+              <Icons.Award /> View Certificate
+            </button>
+          )}
 
           {/* Show correct/incorrect breakdown */}
           <div style={{ marginTop: 24, textAlign: "left" }}>
@@ -2513,6 +2583,8 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
   const [filterRole, setFilterRole] = useState("All");
   const [filterStatus, setFilterStatus] = useState("All");
   const [expandedEmp, setExpandedEmp] = useState(null);
+  const [compView, setCompView] = useState("matrix"); // "matrix" or "transcripts"
+  const [transcriptEmp, setTranscriptEmp] = useState("All");
 
   // Scope: Admin sees all active employees (except themselves). Manager sees only their subordinates.
   // Exclude training-exempt roles (Owner/Operator) from compliance tracking
@@ -2608,6 +2680,18 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
         </div>
       </div>
 
+      {/* Sub-tab toggle */}
+      <div style={{ display: "flex", gap: 0, marginBottom: 20, background: C.white, borderRadius: 6, border: `1px solid ${C.gray200}`, overflow: "hidden", width: "fit-content" }}>
+        {[["matrix", "Compliance Matrix"], ["transcripts", "Transcript Report"]].map(([key, label]) => (
+          <button key={key} onClick={() => setCompView(key)} style={{
+            padding: "10px 20px", fontSize: 13, fontWeight: compView === key ? 600 : 400, fontFamily: font,
+            color: compView === key ? C.teal700 : C.gray400, background: compView === key ? C.teal50 : C.white,
+            border: "none", cursor: "pointer", borderBottom: compView === key ? `2px solid ${C.gold500}` : "2px solid transparent",
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {compView === "matrix" && <>
       {/* KPIs */}
       <div style={{ ...S.row, marginBottom: 24 }}>
         <div style={S.kpiCard}>
@@ -2818,6 +2902,136 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
           </div>
         )}
       </div>
+      </>}
+
+      {/* ── TRANSCRIPT REPORT ── */}
+      {compView === "transcripts" && (() => {
+        const empOptions = [{ id: "All", name: "All Employees" }, ...scopedEmployees.sort((a,b) => a.name.localeCompare(b.name))];
+        const filteredEmps = transcriptEmp === "All" ? scopedEmployees : scopedEmployees.filter(e => e.id === transcriptEmp);
+
+        return (
+          <div>
+            <div style={{ ...S.card, marginBottom: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                <div style={S.cardTitle}>Training Transcript Report</div>
+                <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                  <select style={{ ...S.select, width: "auto", minWidth: 220 }} value={transcriptEmp} onChange={e => setTranscriptEmp(e.target.value)}>
+                    {empOptions.map(e => <option key={e.id} value={e.id}>{e.name}{e.role ? ` — ${e.role}` : ""}</option>)}
+                  </select>
+                  <button style={{ ...S.btnSecondary, display: "inline-flex", alignItems: "center", gap: 6 }} onClick={() => window.print()}>
+                    <Icons.Print /> Print Report
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {filteredEmps.map(emp => {
+              const paths = getEmployeePaths(emp, learningPaths);
+              const requiredCourseIds = [...new Set(paths.flatMap(p => p.courseIds))];
+              const empComps = completions.filter(c => c.employeeId === emp.id);
+
+              // Build full course transcript — both completed and incomplete required courses
+              const transcript = requiredCourseIds.map(cid => {
+                const course = courses.find(c => c.id === cid);
+                if (!course || course.status !== "Active") return null;
+                if (!courseMatchesRole(course, emp.role)) return null;
+                const passed = empComps.filter(c => c.courseId === cid && c.status === "passed").sort((a,b) => b.completedDate.localeCompare(a.completedDate));
+                const failed = empComps.filter(c => c.courseId === cid && c.status === "failed").sort((a,b) => b.completedDate.localeCompare(a.completedDate));
+                const latest = passed[0];
+                const certStatus = getCertStatus(latest, course);
+                // Find due date
+                const matchingPath = paths.find(p => p.required && p.dueDays && p.courseIds.includes(cid));
+                const dueDate = matchingPath ? getCourseDueDate(course, matchingPath, emp) : null;
+                return { course, latest, failed: failed[0], certStatus, attempts: passed.length + failed.length, dueDate };
+              }).filter(Boolean);
+
+              // Also add voluntary completions
+              const voluntaryComps = empComps.filter(c => !requiredCourseIds.includes(c.courseId) && c.status === "passed");
+              const voluntaryTranscript = voluntaryComps.map(comp => {
+                const course = courses.find(c => c.id === comp.courseId);
+                if (!course) return null;
+                return { course, latest: comp, certStatus: getCertStatus(comp, course), attempts: 1, isVoluntary: true };
+              }).filter(Boolean);
+
+              const completedCount = transcript.filter(t => t.certStatus === "current" || t.certStatus === "expiring").length;
+
+              return (
+                <div key={emp.id} style={{ ...S.card, marginBottom: 16 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 18, fontWeight: 600, color: C.teal700 }}>{emp.name}</div>
+                      <div style={{ fontSize: 13, color: C.gray400 }}>{emp.role} · Hired {emp.hireDate} · {emp.email}</div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 24, fontWeight: 700, fontFamily: mono, color: completedCount === transcript.length ? C.success : C.warning }}>{completedCount}/{transcript.length}</div>
+                      <div style={{ fontSize: 11, color: C.gray400, textTransform: "uppercase", letterSpacing: "0.05em" }}>Required Complete</div>
+                    </div>
+                  </div>
+
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.teal700, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Required Courses</div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 16 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...S.th, fontSize: 12 }}>Course</th>
+                        <th style={{ ...S.th, fontSize: 12 }}>Status</th>
+                        <th style={{ ...S.th, fontSize: 12 }}>Score</th>
+                        <th style={{ ...S.th, fontSize: 12 }}>Completed</th>
+                        <th style={{ ...S.th, fontSize: 12 }}>Expires</th>
+                        <th style={{ ...S.th, fontSize: 12 }}>Due</th>
+                        <th style={{ ...S.th, fontSize: 12 }}>Attempts</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {transcript.map(t => {
+                        const isOverdue = t.dueDate && t.dueDate < TODAY && (t.certStatus === "incomplete" || t.certStatus === "expired");
+                        return (
+                          <tr key={t.course.id} style={{ background: isOverdue ? "rgba(196,75,59,0.04)" : "transparent" }}>
+                            <td style={{ ...S.td, fontSize: 13, fontWeight: 500 }}>{t.course.code && <span style={{ color: C.gold500, marginRight: 4 }}>{t.course.code}</span>}{t.course.name}</td>
+                            <td style={S.td}>{certBadge(t.certStatus)}</td>
+                            <td style={{ ...S.td, fontSize: 13 }}>{t.latest ? `${t.latest.score}%` : "—"}</td>
+                            <td style={{ ...S.td, fontSize: 13 }}>{t.latest?.completedDate || "—"}</td>
+                            <td style={{ ...S.td, fontSize: 13 }}>{t.latest?.certExpires || "N/A"}</td>
+                            <td style={{ ...S.td, fontSize: 13, color: isOverdue ? C.error : t.dueDate ? C.gray600 : C.gray400, fontWeight: isOverdue ? 600 : 400 }}>{t.dueDate || "—"}</td>
+                            <td style={{ ...S.td, fontSize: 13, textAlign: "center" }}>{t.attempts}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+
+                  {voluntaryTranscript.length > 0 && (
+                    <>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: C.teal400, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Voluntary Courses</div>
+                      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                        <thead>
+                          <tr>
+                            <th style={{ ...S.th, fontSize: 12 }}>Course</th>
+                            <th style={{ ...S.th, fontSize: 12 }}>Score</th>
+                            <th style={{ ...S.th, fontSize: 12 }}>Completed</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {voluntaryTranscript.map(t => (
+                            <tr key={t.course.id}>
+                              <td style={{ ...S.td, fontSize: 13, fontWeight: 500 }}>{t.course.name}</td>
+                              <td style={{ ...S.td, fontSize: 13 }}>{t.latest.score}%</td>
+                              <td style={{ ...S.td, fontSize: 13 }}>{t.latest.completedDate}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+
+            {filteredEmps.length === 0 && (
+              <div style={{ ...S.card, padding: 40, textAlign: "center", color: C.gray400 }}>No employees match the selected filter.</div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
