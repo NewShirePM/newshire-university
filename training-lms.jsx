@@ -18,6 +18,7 @@ const CONFIG = {
     quizzes:      "TrainingQuizzes",
     completions:  "TrainingCompletions",
     enrollments:  "TrainingEnrollments",
+    assignments:  "TrainingAssignments",
     config:       "AppConfig",
     notifications: "NotificationLog",
   },
@@ -314,16 +315,37 @@ function normalizeEnrollments(items, employeesByEmail) {
   });
 }
 
+function normalizeAssignments(items, employeesByEmail) {
+  return items.map(item => {
+    const f = item.fields;
+    const empEmail = (f.AssignEmployeeEmail || "").toLowerCase();
+    const assignerEmail = (f.AssignedByEmail || "").toLowerCase();
+    const emp = employeesByEmail[empEmail];
+    const assigner = employeesByEmail[assignerEmail];
+    return {
+      id: String(item.id),
+      employeeId: emp ? emp.id : empEmail,
+      courseId: String(f.AssignCourseIDLookupId || f.AssignCourseID || ""),
+      assignedBy: assigner ? assigner.name : assignerEmail,
+      assignedById: assigner ? assigner.id : assignerEmail,
+      assignedDate: (f.AssignedDate || "").split("T")[0],
+      dueDate: f.AssignDueDate ? f.AssignDueDate.split("T")[0] : null,
+      notes: f.AssignNotes || "",
+      status: f.AssignStatus || "Assigned", // Assigned, Completed, Dismissed
+    };
+  });
+}
+
 // ============================================================
 // DATA LOADER — parallel fetch of all 8 lists
 // ============================================================
 async function loadAllData(token) {
   const L = CONFIG.lists;
-  const [usersRaw, coursesRaw, pathsRaw, lessonsRaw, quizzesRaw, completionsRaw, enrollmentsRaw, configRaw] =
+  const [usersRaw, coursesRaw, pathsRaw, lessonsRaw, quizzesRaw, completionsRaw, enrollmentsRaw, assignmentsRaw, configRaw] =
     await Promise.all([
       spGet(token, L.users), spGet(token, L.courses), spGet(token, L.paths),
       spGet(token, L.lessons), spGet(token, L.quizzes), spGet(token, L.completions),
-      spGet(token, L.enrollments), spGet(token, L.config),
+      spGet(token, L.enrollments), spGet(token, L.assignments).catch(() => []), spGet(token, L.config),
     ]);
   const employees = normalizeEmployees(usersRaw);
   const employeesByEmail = {};
@@ -334,13 +356,14 @@ async function loadAllData(token) {
   const quizzes = normalizeQuizzes(quizzesRaw);
   const completions = normalizeCompletions(completionsRaw, employeesByEmail);
   const enrollments = normalizeEnrollments(enrollmentsRaw, employeesByEmail);
+  const assignments = normalizeAssignments(assignmentsRaw, employeesByEmail);
   // Apply config overrides
   for (const item of configRaw) {
     const f = item.fields;
     if (f.Title === "DefaultPassingScore" && f.Value) CONFIG.passingScore = parseInt(f.Value, 10) || 80;
     if (f.Title === "EmailsPaused") EMAIL_PAUSED = f.Value === "true";
   }
-  return { employees, employeesByEmail, courses, paths, lessons, quizzes, completions, enrollments };
+  return { employees, employeesByEmail, courses, paths, lessons, quizzes, completions, enrollments, assignments };
 }
 
 // ============================================================
@@ -1342,6 +1365,7 @@ function App() {
   const [quizzes, setQuizzes] = useState({});
   const [completions, setCompletions] = useState([]);
   const [enrollments, setEnrollments] = useState([]);
+  const [assignments, setAssignments] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
 
   // ── UI state ──
@@ -1377,6 +1401,7 @@ function App() {
         setQuizzes(data.quizzes);
         setCompletions(data.completions);
         setEnrollments(data.enrollments);
+        setAssignments(data.assignments || []);
         // Match logged-in user by email
         const email = account.username.toLowerCase();
         const user = data.employees.find(e => e.email === email);
@@ -1486,6 +1511,53 @@ function App() {
     setEnrollments(prev => prev.filter(e => !(e.employeeId === employeeId && e.courseId === courseId)));
   };
 
+  // ── Assign course handler (supervisor/admin assigns to an employee) ──
+  const handleAssignCourse = async ({ employeeId, courseId, dueDate, notes }) => {
+    const emp = employees.find(e => e.id === employeeId);
+    const course = courses.find(c => c.id === courseId);
+    if (!emp || !course) return;
+    const assignData = {
+      Title: `${emp.name} - ${course.name}`,
+      AssignEmployeeEmail: emp.email,
+      AssignCourseIDLookupId: parseInt(courseId, 10),
+      AssignedByEmail: currentUser.email,
+      AssignedDate: new Date().toISOString(),
+      AssignDueDate: dueDate || null,
+      AssignNotes: notes || "",
+      AssignStatus: "Assigned",
+    };
+    if (isLive) {
+      try {
+        const token = await getToken();
+        const result = await spCreate(token, CONFIG.lists.assignments, assignData);
+        const newAssignment = {
+          id: String(result.id),
+          employeeId: emp.id,
+          courseId,
+          assignedBy: currentUser.name,
+          assignedById: currentUser.id,
+          assignedDate: TODAY,
+          dueDate: dueDate || null,
+          notes: notes || "",
+          status: "Assigned",
+        };
+        setAssignments(prev => [...prev, newAssignment]);
+        // Send notification email
+        const dueLine = dueDate ? `<p>This course must be completed by <strong>${new Date(dueDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</strong>.</p>` : "";
+        const notesLine = notes ? `<p><strong>Notes from your supervisor:</strong> ${notes}</p>` : "";
+        const bodyHtml = `<p>Hi ${emp.name.split(" ")[0]},</p>` +
+          `<p>${currentUser.name} has assigned you the course <strong>${course.name}</strong> in NewShire University.</p>` +
+          `<p>You must complete this course and pass the assessment with a score of ${course.passingScore || CONFIG.passingScore}% or higher.</p>` +
+          dueLine + notesLine +
+          `<p>Log in to NewShire University to begin.</p>`;
+        sendEmail(token, emp.email, `Course Assigned: ${course.name}`, emailTemplate(bodyHtml, `Course Assigned: ${course.name}`))
+          .catch(e => console.error("Assignment email failed:", e));
+      } catch (err) { console.error("Assign failed:", err); alert("Failed to assign: " + err.message); }
+    } else {
+      setAssignments(prev => [...prev, { id: `asgn_${Date.now()}`, employeeId, courseId, assignedBy: currentUser.name, assignedById: currentUser.id, assignedDate: TODAY, dueDate, notes, status: "Assigned" }]);
+    }
+  };
+
   // ── Quiz submit handler (called from QuizView) ──
   const handleQuizSubmit = async (employee, course, score, passed, answersJson) => {
     const certExpires = passed && course.recertDays
@@ -1498,6 +1570,16 @@ function App() {
         // Fire notification emails (non-blocking — don't let email failure break the quiz flow)
         const admins = employees.filter(e => e.active && e.appRole === "admin").map(e => e.email);
         sendQuizResultEmail(token, employee, course, score, passed, admins.length > 0 ? admins : [CONFIG.adminEmail]).catch(e => console.error("Quiz email failed:", e));
+        // Auto-complete any matching assignments for this employee + course
+        if (passed) {
+          const openAssignments = assignments.filter(a => a.employeeId === employee.id && a.courseId === course.id && a.status === "Assigned");
+          for (const a of openAssignments) {
+            try {
+              await spUpdate(token, CONFIG.lists.assignments, a.id, { AssignStatus: "Completed" });
+              setAssignments(prev => prev.map(x => x.id === a.id ? { ...x, status: "Completed" } : x));
+            } catch (e) { console.error("Assignment completion update failed:", e); }
+          }
+        }
         return comp;
       } catch (err) { console.error("Quiz submit failed:", err); }
     }
@@ -1622,7 +1704,7 @@ function App() {
         {/* Content */}
         <div style={S.content}>
           {activeTabName === "My Training" && (
-            <MyTrainingView user={currentUser} completions={completions} setCompletions={setCompletions} enrollments={enrollments} onUnenroll={handleUnenroll} onQuizSubmit={handleQuizSubmit} view={view} setView={setView} mobile={mobile} />
+            <MyTrainingView user={currentUser} completions={completions} setCompletions={setCompletions} enrollments={enrollments} assignments={assignments} onUnenroll={handleUnenroll} onQuizSubmit={handleQuizSubmit} view={view} setView={setView} mobile={mobile} />
           )}
           {activeTabName === "Team Compliance" && showComplianceDashboard && (
             <ComplianceDashboard
@@ -1635,7 +1717,7 @@ function App() {
             />
           )}
           {activeTabName === "Training Library" && (
-            <TrainingLibraryView user={currentUser} completions={completions} enrollments={enrollments} onEnroll={handleEnroll} onUnenroll={handleUnenroll} setView={(v) => { setView(v); setTab(0); }} mobile={mobile} />
+            <TrainingLibraryView user={currentUser} completions={completions} enrollments={enrollments} assignments={assignments} onEnroll={handleEnroll} onUnenroll={handleUnenroll} onAssign={handleAssignCourse} isManager={isManager} isAdmin={isAdmin} subordinateIds={subordinateIds} setView={(v) => { setView(v); setTab(0); }} mobile={mobile} />
           )}
           {activeTabName === "Manage" && isAdmin && (
             <ManageView mobile={mobile} />
@@ -1649,9 +1731,10 @@ function App() {
 // ============================================================
 // MY TRAINING VIEW
 // ============================================================
-function MyTrainingView({ user, completions, setCompletions, enrollments, onUnenroll, onQuizSubmit, view, setView, mobile }) {
+function MyTrainingView({ user, completions, setCompletions, enrollments, assignments, onUnenroll, onQuizSubmit, view, setView, mobile }) {
   const { courses, learningPaths, lessons, quizzes } = useData();
   const myCompletions = completions.filter(c => c.employeeId === user.id);
+  const myAssignments = (assignments || []).filter(a => a.employeeId === user.id && a.status === "Assigned");
   const [collapsedPaths, setCollapsedPaths] = useState([]);
 
   // Sub-views
@@ -1775,6 +1858,50 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, onUnen
           <div style={{ ...S.kpiValue, color: expiredCerts.length > 0 ? C.error : C.success }}>{expiredCerts.length}</div>
         </div>
       </div>
+
+      {/* Assigned Courses (from supervisor) */}
+      {myAssignments.length > 0 && (
+        <div style={{ ...S.card, borderLeft: `3px solid ${C.error}`, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Icons.Alert />
+              <span style={{ fontSize: 16, fontWeight: 600, color: C.teal700 }}>Assigned Courses</span>
+            </div>
+            <span style={S.badge("error")}>{myAssignments.length} Assigned</span>
+          </div>
+          {myAssignments.map(assignment => {
+            const course = courses.find(c => c.id === assignment.courseId);
+            if (!course) return null;
+            const isOverdue = assignment.dueDate && assignment.dueDate < new Date().toISOString().split("T")[0];
+            return (
+              <div
+                key={assignment.id}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", borderBottom: `1px solid ${C.gray100}`, borderRadius: 4, background: isOverdue ? C.errorBg : "transparent" }}
+              >
+                <div
+                  onClick={() => course.status === "Active" && setView({ type: "course", courseId: course.id })}
+                  style={{ cursor: course.status === "Active" ? "pointer" : "default", flex: 1 }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 600, color: C.teal700, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    {course.name}
+                    {isOverdue && <span style={{ ...S.badge("error"), fontSize: 10 }}>OVERDUE</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: C.gray400, marginTop: 2 }}>
+                    Assigned by {assignment.assignedBy} on {assignment.assignedDate}
+                    {assignment.dueDate && <span style={{ color: isOverdue ? C.error : C.warning, fontWeight: 600 }}> · Due {assignment.dueDate}</span>}
+                  </div>
+                  {assignment.notes && (
+                    <div style={{ fontSize: 12, color: C.teal500, marginTop: 4, fontStyle: "italic" }}>"{assignment.notes}"</div>
+                  )}
+                </div>
+                <span onClick={() => course.status === "Active" && setView({ type: "course", courseId: course.id })} style={{ cursor: "pointer", color: C.gray400 }}>
+                  <Icons.ChevronRight />
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Learning Paths */}
       {paths.map(path => {
@@ -2695,11 +2822,13 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
 // ============================================================
 // TRAINING LIBRARY VIEW
 // ============================================================
-function TrainingLibraryView({ user, completions, enrollments, onEnroll, onUnenroll, setView, mobile }) {
-  const { courses, lessons, quizzes, learningPaths } = useData();
+function TrainingLibraryView({ user, completions, enrollments, assignments, onEnroll, onUnenroll, onAssign, isManager, isAdmin, subordinateIds, setView, mobile }) {
+  const { courses, lessons, quizzes, learningPaths, employees } = useData();
   const [filterCat, setFilterCat] = useState("All");
   const [filterType, setFilterType] = useState("All");
   const [search, setSearch] = useState("");
+  const [assignModal, setAssignModal] = useState(null); // { courseId, courseName }
+  const canAssign = isAdmin || isManager;
   const categories = ["All", ...new Set(courses.map(c => c.category))];
   const requiredCourseIds = getRequiredCourseIds(user, learningPaths, courses);
   const myEnrollmentIds = enrollments.filter(e => e.employeeId === user.id).map(e => e.courseId);
@@ -2862,6 +2991,15 @@ function TrainingLibraryView({ user, completions, enrollments, onEnroll, onUnenr
                       <Icons.Play /> Start Course
                     </button>
                   )}
+                  {/* Assign button for managers/admins */}
+                  {canAssign && course.status === "Active" && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setAssignModal({ courseId: course.id, courseName: course.name }); }}
+                      style={{ ...S.btnSecondary, width: "100%", justifyContent: "center", fontSize: 12, padding: "6px 16px", marginTop: 4, color: C.gold700, borderColor: C.gold500 }}
+                    >
+                      Assign to Employee
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -2872,6 +3010,52 @@ function TrainingLibraryView({ user, completions, enrollments, onEnroll, onUnenr
           <div style={{ padding: 40, textAlign: "center", color: C.gray400 }}>No courses match your search.</div>
         )}
       </div>
+
+      {/* Assign Course Modal */}
+      {assignModal && (() => {
+        const AssignModal = () => {
+          const [selectedEmp, setSelectedEmp] = useState("");
+          const [dueDate, setDueDate] = useState("");
+          const [notes, setNotes] = useState("");
+          const [saving, setSaving] = useState(false);
+          // Admins see all active non-exempt employees, managers see subordinates
+          const assignableEmployees = employees.filter(e => {
+            if (!e.active || isTrainingExempt(e)) return false;
+            if (isAdmin) return true;
+            return subordinateIds.includes(e.id);
+          });
+          const handleSubmit = async () => {
+            if (!selectedEmp) return alert("Please select an employee.");
+            setSaving(true);
+            await onAssign({ employeeId: selectedEmp, courseId: assignModal.courseId, dueDate: dueDate || null, notes });
+            setSaving(false);
+            setAssignModal(null);
+          };
+          return (
+            <Modal title={`Assign: ${assignModal.courseName}`} onClose={() => setAssignModal(null)}>
+              <FormField label="Assign To">
+                <select style={S.select} value={selectedEmp} onChange={e => setSelectedEmp(e.target.value)}>
+                  <option value="">— Select Employee —</option>
+                  {assignableEmployees.sort((a,b) => a.name.localeCompare(b.name)).map(e => (
+                    <option key={e.id} value={e.id}>{e.name} — {e.role}</option>
+                  ))}
+                </select>
+              </FormField>
+              <FormField label="Due Date (optional)" hint="Leave blank for no deadline">
+                <input style={S.input} type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} />
+              </FormField>
+              <FormField label="Notes (optional)" hint="Reason for assignment — visible to the employee">
+                <textarea style={{ ...S.input, minHeight: 60, resize: "vertical" }} value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. Retake required per coaching conversation on 3/10..." />
+              </FormField>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16, paddingTop: 12, borderTop: `1px solid ${C.gray100}` }}>
+                <button style={S.btnSecondary} onClick={() => setAssignModal(null)}>Cancel</button>
+                <button style={S.btnPrimary} onClick={handleSubmit} disabled={saving}>{saving ? "Assigning..." : "Assign & Notify"}</button>
+              </div>
+            </Modal>
+          );
+        };
+        return <AssignModal />;
+      })()}
     </div>
   );
 }
