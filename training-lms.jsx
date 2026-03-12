@@ -2585,6 +2585,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
   const [expandedEmp, setExpandedEmp] = useState(null);
   const [compView, setCompView] = useState("matrix"); // "matrix" or "transcripts"
   const [transcriptEmp, setTranscriptEmp] = useState("All");
+  const [transcriptShowInactive, setTranscriptShowInactive] = useState(false);
 
   // Scope: Admin sees all active employees (except themselves). Manager sees only their subordinates.
   // Exclude training-exempt roles (Owner/Operator) from compliance tracking
@@ -2906,8 +2907,86 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
 
       {/* ── TRANSCRIPT REPORT ── */}
       {compView === "transcripts" && (() => {
-        const empOptions = [{ id: "All", name: "All Employees" }, ...scopedEmployees.sort((a,b) => a.name.localeCompare(b.name))];
-        const filteredEmps = transcriptEmp === "All" ? scopedEmployees : scopedEmployees.filter(e => e.id === transcriptEmp);
+        // Include inactive employees when toggle is on
+        const allScopedEmployees = employees.filter(e => {
+          if (!visibleEmployeeIds.includes(e.id) && !isAdmin) return false;
+          if (isAdmin && isTrainingExempt(e)) return false;
+          if (!isAdmin && !visibleEmployeeIds.includes(e.id)) return false;
+          return true;
+        });
+        const transcriptEmployees = transcriptShowInactive
+          ? allScopedEmployees.filter(e => !isTrainingExempt(e))
+          : allScopedEmployees.filter(e => e.active && !isTrainingExempt(e));
+        const empOptions = [{ id: "All", name: "All Employees" }, ...transcriptEmployees.sort((a,b) => a.name.localeCompare(b.name))];
+        const filteredEmps = transcriptEmp === "All" ? transcriptEmployees : transcriptEmployees.filter(e => e.id === transcriptEmp);
+
+        // Build transcript data for display AND export
+        const buildTranscriptData = (emps) => {
+          const rows = [];
+          for (const emp of emps) {
+            const paths = getEmployeePaths(emp, learningPaths);
+            const requiredCourseIds = [...new Set(paths.flatMap(p => p.courseIds))];
+            const empComps = completions.filter(c => c.employeeId === emp.id);
+
+            // Required courses
+            for (const cid of requiredCourseIds) {
+              const course = courses.find(c => c.id === cid);
+              if (!course || course.status !== "Active") continue;
+              if (!courseMatchesRole(course, emp.role)) continue;
+              const passed = empComps.filter(c => c.courseId === cid && c.status === "passed").sort((a,b) => b.completedDate.localeCompare(a.completedDate));
+              const failed = empComps.filter(c => c.courseId === cid && c.status === "failed");
+              const latest = passed[0];
+              const certStatus = getCertStatus(latest, course);
+              const matchingPath = paths.find(p => p.required && p.dueDays && p.courseIds.includes(cid));
+              const dueDate = matchingPath ? getCourseDueDate(course, matchingPath, emp) : null;
+              rows.push({
+                name: emp.name, email: emp.email, role: emp.role, hireDate: emp.hireDate, active: emp.active ? "Active" : "Inactive",
+                courseCode: course.code, courseName: course.name, category: course.category, type: "Required",
+                status: certStatus === "current" ? "Complete" : certStatus === "expiring" ? "Expiring" : certStatus === "expired" ? "Expired" : "Incomplete",
+                score: latest ? latest.score : "", completedDate: latest?.completedDate || "", expires: latest?.certExpires || "",
+                dueDate: dueDate || "", attempts: passed.length + failed.length,
+              });
+            }
+
+            // Voluntary completions
+            const volComps = empComps.filter(c => !requiredCourseIds.includes(c.courseId) && c.status === "passed");
+            for (const comp of volComps) {
+              const course = courses.find(c => c.id === comp.courseId);
+              if (!course) continue;
+              rows.push({
+                name: emp.name, email: emp.email, role: emp.role, hireDate: emp.hireDate, active: emp.active ? "Active" : "Inactive",
+                courseCode: course.code, courseName: course.name, category: course.category, type: "Voluntary",
+                status: "Complete", score: comp.score, completedDate: comp.completedDate, expires: comp.certExpires || "",
+                dueDate: "", attempts: 1,
+              });
+            }
+          }
+          return rows;
+        };
+
+        const exportCSV = () => {
+          const data = buildTranscriptData(filteredEmps);
+          const headers = ["Employee", "Email", "Role", "Hire Date", "Status", "Course Code", "Course Name", "Category", "Type", "Completion Status", "Score", "Completed Date", "Expires", "Due Date", "Attempts"];
+          const csvRows = [headers.join(",")];
+          for (const r of data) {
+            csvRows.push([
+              `"${r.name}"`, `"${r.email}"`, `"${r.role}"`, r.hireDate, r.active,
+              `"${r.courseCode}"`, `"${r.courseName}"`, `"${r.category}"`, r.type,
+              r.status, r.score, r.completedDate, r.expires, r.dueDate, r.attempts
+            ].join(","));
+          }
+          const blob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          const dateStr = new Date().toISOString().split("T")[0];
+          const empLabel = transcriptEmp === "All" ? "AllEmployees" : filteredEmps[0]?.name.replace(/\s+/g, "") || "Employee";
+          a.download = `NewShire-Training-Transcript-${empLabel}-${dateStr}.csv`;
+          a.click();
+          URL.revokeObjectURL(url);
+        };
+
+        const transcriptData = buildTranscriptData(filteredEmps);
 
         return (
           <div>
@@ -2918,117 +2997,65 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                   <select style={{ ...S.select, width: "auto", minWidth: 220 }} value={transcriptEmp} onChange={e => setTranscriptEmp(e.target.value)}>
                     {empOptions.map(e => <option key={e.id} value={e.id}>{e.name}{e.role ? ` — ${e.role}` : ""}</option>)}
                   </select>
-                  <button style={{ ...S.btnSecondary, display: "inline-flex", alignItems: "center", gap: 6 }} onClick={() => window.print()}>
-                    <Icons.Print /> Print Report
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: C.gray400, cursor: "pointer" }}>
+                    <input type="checkbox" checked={transcriptShowInactive} onChange={e => setTranscriptShowInactive(e.target.checked)} style={{ accentColor: C.gold600 }} />
+                    Include Inactive
+                  </label>
+                  <button style={{ ...S.btnPrimary, display: "inline-flex", alignItems: "center", gap: 6 }} onClick={exportCSV}>
+                    <Icons.Download /> Export to Excel
                   </button>
                 </div>
               </div>
+              <div style={{ fontSize: 12, color: C.gray400, marginTop: 8 }}>
+                {transcriptData.length} records · {filteredEmps.length} employee{filteredEmps.length !== 1 ? "s" : ""}{transcriptShowInactive ? " (including inactive)" : ""}
+              </div>
             </div>
 
-            {filteredEmps.map(emp => {
-              const paths = getEmployeePaths(emp, learningPaths);
-              const requiredCourseIds = [...new Set(paths.flatMap(p => p.courseIds))];
-              const empComps = completions.filter(c => c.employeeId === emp.id);
-
-              // Build full course transcript — both completed and incomplete required courses
-              const transcript = requiredCourseIds.map(cid => {
-                const course = courses.find(c => c.id === cid);
-                if (!course || course.status !== "Active") return null;
-                if (!courseMatchesRole(course, emp.role)) return null;
-                const passed = empComps.filter(c => c.courseId === cid && c.status === "passed").sort((a,b) => b.completedDate.localeCompare(a.completedDate));
-                const failed = empComps.filter(c => c.courseId === cid && c.status === "failed").sort((a,b) => b.completedDate.localeCompare(a.completedDate));
-                const latest = passed[0];
-                const certStatus = getCertStatus(latest, course);
-                // Find due date
-                const matchingPath = paths.find(p => p.required && p.dueDays && p.courseIds.includes(cid));
-                const dueDate = matchingPath ? getCourseDueDate(course, matchingPath, emp) : null;
-                return { course, latest, failed: failed[0], certStatus, attempts: passed.length + failed.length, dueDate };
-              }).filter(Boolean);
-
-              // Also add voluntary completions
-              const voluntaryComps = empComps.filter(c => !requiredCourseIds.includes(c.courseId) && c.status === "passed");
-              const voluntaryTranscript = voluntaryComps.map(comp => {
-                const course = courses.find(c => c.id === comp.courseId);
-                if (!course) return null;
-                return { course, latest: comp, certStatus: getCertStatus(comp, course), attempts: 1, isVoluntary: true };
-              }).filter(Boolean);
-
-              const completedCount = transcript.filter(t => t.certStatus === "current" || t.certStatus === "expiring").length;
-
-              return (
-                <div key={emp.id} style={{ ...S.card, marginBottom: 16 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-                    <div>
-                      <div style={{ fontSize: 18, fontWeight: 600, color: C.teal700 }}>{emp.name}</div>
-                      <div style={{ fontSize: 13, color: C.gray400 }}>{emp.role} · Hired {emp.hireDate} · {emp.email}</div>
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 24, fontWeight: 700, fontFamily: mono, color: completedCount === transcript.length ? C.success : C.warning }}>{completedCount}/{transcript.length}</div>
-                      <div style={{ fontSize: 11, color: C.gray400, textTransform: "uppercase", letterSpacing: "0.05em" }}>Required Complete</div>
-                    </div>
+            {/* Preview table */}
+            <div style={S.card}>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...S.th, fontSize: 11 }}>Employee</th>
+                      <th style={{ ...S.th, fontSize: 11 }}>Role</th>
+                      <th style={{ ...S.th, fontSize: 11 }}>Active</th>
+                      <th style={{ ...S.th, fontSize: 11 }}>Course</th>
+                      <th style={{ ...S.th, fontSize: 11 }}>Type</th>
+                      <th style={{ ...S.th, fontSize: 11 }}>Status</th>
+                      <th style={{ ...S.th, fontSize: 11 }}>Score</th>
+                      <th style={{ ...S.th, fontSize: 11 }}>Completed</th>
+                      <th style={{ ...S.th, fontSize: 11 }}>Expires</th>
+                      <th style={{ ...S.th, fontSize: 11 }}>Due</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {transcriptData.slice(0, 100).map((r, i) => {
+                      const isOverdue = r.dueDate && r.dueDate < TODAY && (r.status === "Incomplete" || r.status === "Expired");
+                      return (
+                        <tr key={i} style={{ background: isOverdue ? "rgba(196,75,59,0.04)" : r.active === "Inactive" ? "rgba(168,176,176,0.06)" : "transparent" }}>
+                          <td style={{ ...S.td, fontSize: 12, fontWeight: 500 }}>{r.name}</td>
+                          <td style={{ ...S.td, fontSize: 12 }}>{r.role}</td>
+                          <td style={{ ...S.td, fontSize: 12 }}><span style={r.active === "Active" ? S.badge("success") : S.badge("neutral")}>{r.active}</span></td>
+                          <td style={{ ...S.td, fontSize: 12 }}>{r.courseCode && <span style={{ color: C.gold500, marginRight: 4 }}>{r.courseCode}</span>}{r.courseName}</td>
+                          <td style={{ ...S.td, fontSize: 12 }}><span style={r.type === "Required" ? S.badge("warning") : S.badge("info")}>{r.type}</span></td>
+                          <td style={{ ...S.td, fontSize: 12 }}><span style={S.badge(r.status === "Complete" ? "success" : r.status === "Expired" ? "error" : r.status === "Expiring" ? "warning" : "neutral")}>{r.status}</span></td>
+                          <td style={{ ...S.td, fontSize: 12 }}>{r.score || "—"}{r.score ? "%" : ""}</td>
+                          <td style={{ ...S.td, fontSize: 12 }}>{r.completedDate || "—"}</td>
+                          <td style={{ ...S.td, fontSize: 12 }}>{r.expires || "—"}</td>
+                          <td style={{ ...S.td, fontSize: 12, color: isOverdue ? C.error : C.gray600, fontWeight: isOverdue ? 600 : 400 }}>{r.dueDate || "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {transcriptData.length > 100 && (
+                  <div style={{ padding: 12, textAlign: "center", fontSize: 13, color: C.gray400 }}>
+                    Showing first 100 of {transcriptData.length} records. Export to see all.
                   </div>
-
-                  <div style={{ fontSize: 12, fontWeight: 600, color: C.teal700, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Required Courses</div>
-                  <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 16 }}>
-                    <thead>
-                      <tr>
-                        <th style={{ ...S.th, fontSize: 12 }}>Course</th>
-                        <th style={{ ...S.th, fontSize: 12 }}>Status</th>
-                        <th style={{ ...S.th, fontSize: 12 }}>Score</th>
-                        <th style={{ ...S.th, fontSize: 12 }}>Completed</th>
-                        <th style={{ ...S.th, fontSize: 12 }}>Expires</th>
-                        <th style={{ ...S.th, fontSize: 12 }}>Due</th>
-                        <th style={{ ...S.th, fontSize: 12 }}>Attempts</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {transcript.map(t => {
-                        const isOverdue = t.dueDate && t.dueDate < TODAY && (t.certStatus === "incomplete" || t.certStatus === "expired");
-                        return (
-                          <tr key={t.course.id} style={{ background: isOverdue ? "rgba(196,75,59,0.04)" : "transparent" }}>
-                            <td style={{ ...S.td, fontSize: 13, fontWeight: 500 }}>{t.course.code && <span style={{ color: C.gold500, marginRight: 4 }}>{t.course.code}</span>}{t.course.name}</td>
-                            <td style={S.td}>{certBadge(t.certStatus)}</td>
-                            <td style={{ ...S.td, fontSize: 13 }}>{t.latest ? `${t.latest.score}%` : "—"}</td>
-                            <td style={{ ...S.td, fontSize: 13 }}>{t.latest?.completedDate || "—"}</td>
-                            <td style={{ ...S.td, fontSize: 13 }}>{t.latest?.certExpires || "N/A"}</td>
-                            <td style={{ ...S.td, fontSize: 13, color: isOverdue ? C.error : t.dueDate ? C.gray600 : C.gray400, fontWeight: isOverdue ? 600 : 400 }}>{t.dueDate || "—"}</td>
-                            <td style={{ ...S.td, fontSize: 13, textAlign: "center" }}>{t.attempts}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-
-                  {voluntaryTranscript.length > 0 && (
-                    <>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: C.teal400, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Voluntary Courses</div>
-                      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                        <thead>
-                          <tr>
-                            <th style={{ ...S.th, fontSize: 12 }}>Course</th>
-                            <th style={{ ...S.th, fontSize: 12 }}>Score</th>
-                            <th style={{ ...S.th, fontSize: 12 }}>Completed</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {voluntaryTranscript.map(t => (
-                            <tr key={t.course.id}>
-                              <td style={{ ...S.td, fontSize: 13, fontWeight: 500 }}>{t.course.name}</td>
-                              <td style={{ ...S.td, fontSize: 13 }}>{t.latest.score}%</td>
-                              <td style={{ ...S.td, fontSize: 13 }}>{t.latest.completedDate}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </>
-                  )}
-                </div>
-              );
-            })}
-
-            {filteredEmps.length === 0 && (
-              <div style={{ ...S.card, padding: 40, textAlign: "center", color: C.gray400 }}>No employees match the selected filter.</div>
-            )}
+                )}
+              </div>
+            </div>
           </div>
         );
       })()}
