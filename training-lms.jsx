@@ -53,7 +53,8 @@ const MSAL_CONFIG = {
   },
   cache: { cacheLocation: "sessionStorage" },
 };
-const SCOPES = ["Sites.ReadWrite.All", "User.Read", "Mail.Send"];
+const SCOPES = ["Sites.ReadWrite.All", "User.Read"];
+const EMAIL_SCOPES = ["Sites.ReadWrite.All", "User.Read", "Mail.Send"];
 
 let _msalInstance = null;
 const MSAL_CDN = "https://unpkg.com/@azure/msal-browser@2.38.3/lib/msal-browser.min.js";
@@ -1453,7 +1454,7 @@ function App() {
       setAuthState("loading");
       try {
         const account = await msalLogin();
-        if (!account) { loadDemoData(); return; }
+        if (!account) { setAuthError("Microsoft sign-in was cancelled or failed. Please try again."); setAuthState("error"); return; }
         setMsalAccount(account);
         const token = await msalGetToken(account);
         tokenRef.current = token;
@@ -1479,8 +1480,7 @@ function App() {
       } catch (err) {
         console.error("Auth/load error:", err);
         setAuthError(err.message);
-        // Offer demo mode fallback
-        loadDemoData();
+        setAuthState("error");
       }
     })();
   }, []);
