@@ -95,13 +95,25 @@ async function getMsal() {
 
 async function msalLogin() {
   const instance = await getMsal();
+  // Handle redirect response first (user returning from Microsoft login)
+  try {
+    const redirectResponse = await instance.handleRedirectPromise();
+    if (redirectResponse) return redirectResponse.account;
+  } catch (err) { console.error("Redirect handling error:", err); }
+  // Check for existing sessions
   const accounts = instance.getAllAccounts();
   if (accounts.length > 0) return accounts[0];
+  // No session — try popup first, fall back to redirect if blocked
   try {
     const response = await instance.loginPopup({ scopes: SCOPES });
     return response.account;
   } catch (err) {
     if (err.errorCode === "user_cancelled") return null;
+    if (err.errorCode === "popup_window_error" || err.errorCode === "empty_window_error") {
+      // Popup blocked — use redirect instead
+      await instance.loginRedirect({ scopes: SCOPES });
+      return null; // Page will reload after redirect
+    }
     throw err;
   }
 }
@@ -112,8 +124,14 @@ async function msalGetToken(account) {
     const response = await instance.acquireTokenSilent({ scopes: SCOPES, account });
     return response.accessToken;
   } catch {
-    const response = await instance.acquireTokenPopup({ scopes: SCOPES, account });
-    return response.accessToken;
+    try {
+      const response = await instance.acquireTokenPopup({ scopes: SCOPES, account });
+      return response.accessToken;
+    } catch (popupErr) {
+      // Popup blocked — use redirect
+      await instance.acquireTokenRedirect({ scopes: SCOPES, account });
+      return null;
+    }
   }
 }
 
