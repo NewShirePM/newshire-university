@@ -584,9 +584,9 @@ async function sendQuizResultEmail(token, employee, course, score, passed, admin
       ? `<p>Your certification is valid for <strong>${course.recertDays} days</strong>. You will receive a reminder before it expires.</p>`
       : "";
     await sendEmail(token, employee.email,
-      `Course Passed: ${course.name}`,
+      `Course Passed: ${courseFmt(course)}`,
       `<p>Hi ${employee.name.split(" ")[0]},</p>
-       <p>Congratulations! You passed <strong>${course.name}</strong> with a score of <strong>${score}%</strong>.</p>
+       <p>Congratulations! You passed <strong>${courseFmt(course)}</strong> with a score of <strong>${score}%</strong>.</p>
        ${certLine}
        <p style="margin-top:16px;font-size:13px;color:#7A8585">Keep up the great work.</p>`
     );
@@ -594,8 +594,8 @@ async function sendQuizResultEmail(token, employee, course, score, passed, admin
     // Email admin(s): failure notification
     for (const adminEmail of adminEmails) {
       await sendEmail(token, adminEmail,
-        `Quiz Failed: ${employee.name} — ${course.name}`,
-        `<p><strong>${employee.name}</strong> (${employee.role}) did not pass the quiz for <strong>${course.name}</strong>.</p>
+        `Quiz Failed: ${employee.name} — ${courseFmt(course)}`,
+        `<p><strong>${employee.name}</strong> (${employee.role}) did not pass the quiz for <strong>${courseFmt(course)}</strong>.</p>
          <table style="border-collapse:collapse;margin:12px 0">
            <tr><td style="padding:6px 16px 6px 0;color:#7A8585;font-size:13px">Score</td><td style="padding:6px 0;font-weight:600;color:#C44B3B">${score}%</td></tr>
            <tr><td style="padding:6px 16px 6px 0;color:#7A8585;font-size:13px">Required</td><td style="padding:6px 0;font-weight:600">${CONFIG.passingScore}%</td></tr>
@@ -608,9 +608,9 @@ async function sendQuizResultEmail(token, employee, course, score, passed, admin
 
 async function sendEnrollmentEmail(token, employee, course) {
   await sendEmail(token, employee.email,
-    `Enrolled: ${course.name}`,
+    `Enrolled: ${courseFmt(course)}`,
     `<p>Hi ${employee.name.split(" ")[0]},</p>
-     <p>You have been enrolled in <strong>${course.name}</strong>.</p>
+     <p>You have been enrolled in <strong>${courseFmt(course)}</strong>.</p>
      <p style="font-size:13px;color:#7A8585">${course.category} &middot; ${course.durationMin} minutes</p>
      <p>Log in to NewShire University to begin the course.</p>`
   );
@@ -647,9 +647,9 @@ async function runCertExpirationScan(token, employees, completions, courses, adm
         // Escalation: admin only, high priority
         for (const ae of adminEmails) {
           await sendEmail(token, ae,
-            `OVERDUE: ${emp.name} — ${course.name} certification expired`,
+            `OVERDUE: ${emp.name} — ${courseFmt(course)} certification expired`,
             `<p style="color:#C44B3B;font-weight:600">Certification has been expired for 7+ days.</p>
-             <p><strong>${emp.name}</strong> (${emp.role}) — <strong>${course.name}</strong></p>
+             <p><strong>${emp.name}</strong> (${emp.role}) — <strong>${courseFmt(course)}</strong></p>
              <p>Expired: <strong>${latest.certExpires}</strong></p>
              <p style="font-size:13px;color:#7A8585">Please follow up directly to ensure recertification is completed.</p>`
           );
@@ -658,16 +658,16 @@ async function runCertExpirationScan(token, employees, completions, courses, adm
         const urgency = tier === "today" ? "expires today" : tier === "14day" ? "expires in 14 days" : "expires in 30 days";
         // Email employee
         await sendEmail(token, emp.email,
-          `Certification ${urgency}: ${course.name}`,
+          `Certification ${urgency}: ${courseFmt(course)}`,
           `<p>Hi ${emp.name.split(" ")[0]},</p>
-           <p>Your certification for <strong>${course.name}</strong> <strong>${urgency}</strong> (${latest.certExpires}).</p>
+           <p>Your certification for <strong>${courseFmt(course)}</strong> <strong>${urgency}</strong> (${latest.certExpires}).</p>
            <p>Log in to NewShire University to recertify by retaking the course quiz.</p>`
         );
         // Email admin
         for (const ae of adminEmails) {
           await sendEmail(token, ae,
-            `Cert ${urgency}: ${emp.name} — ${course.name}`,
-            `<p><strong>${emp.name}</strong> (${emp.role}) — <strong>${course.name}</strong> certification ${urgency}.</p>
+            `Cert ${urgency}: ${emp.name} — ${courseFmt(course)}`,
+            `<p><strong>${emp.name}</strong> (${emp.role}) — <strong>${courseFmt(course)}</strong> certification ${urgency}.</p>
              <p>Expiration date: <strong>${latest.certExpires}</strong></p>`
           );
         }
@@ -726,9 +726,9 @@ async function runMondayManagerReport(token, employees, completions, courses, le
           if (!latest.certExpires) continue;
           const daysLeft = Math.round((new Date(latest.certExpires) - new Date(todayStr)) / 86400000);
           if (daysLeft < 0) {
-            issues.push({ emp, type: "expired", detail: `${course.name} cert expired ${latest.certExpires}` });
+            issues.push({ emp, type: "expired", detail: `${courseFmt(course)} cert expired ${latest.certExpires}` });
           } else if (daysLeft <= 30) {
-            issues.push({ emp, type: "expiring", detail: `${course.name} cert expires ${latest.certExpires} (${daysLeft}d)` });
+            issues.push({ emp, type: "expiring", detail: `${courseFmt(course)} cert expires ${latest.certExpires} (${daysLeft}d)` });
           }
         }
       }
@@ -1303,6 +1303,12 @@ function courseMatchesRole(course, role) {
   return course.roles.includes(role);
 }
 
+// Format course display name: "FHC 101 — Course Title" or just "Course Title" if no code
+function courseFmt(course) {
+  if (!course) return "";
+  return course.code ? `${course.code} — ${course.name}` : course.name;
+}
+
 // ============================================================
 // ICON COMPONENTS
 // ============================================================
@@ -1604,11 +1610,11 @@ function App() {
         const dueLine = dueDate ? `<p>This course must be completed by <strong>${new Date(dueDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</strong>.</p>` : "";
         const notesLine = notes ? `<p><strong>Notes from your supervisor:</strong> ${notes}</p>` : "";
         const bodyHtml = `<p>Hi ${emp.name.split(" ")[0]},</p>` +
-          `<p>${currentUser.name} has assigned you the course <strong>${course.name}</strong> in NewShire University.</p>` +
+          `<p>${currentUser.name} has assigned you the course <strong>${courseFmt(course)}</strong> in NewShire University.</p>` +
           `<p>You must complete this course and pass the assessment with a score of ${course.passingScore || CONFIG.passingScore}% or higher.</p>` +
           dueLine + notesLine +
           `<p>Log in to NewShire University to begin.</p>`;
-        sendEmail(token, emp.email, `Course Assigned: ${course.name}`, emailTemplate(bodyHtml, `Course Assigned: ${course.name}`))
+        sendEmail(token, emp.email, `Course Assigned: ${courseFmt(course)}`, emailTemplate(bodyHtml, `Course Assigned: ${courseFmt(course)}`))
           .catch(e => console.error("Assignment email failed:", e));
       } catch (err) { console.error("Assign failed:", err); alert("Failed to assign: " + err.message); }
     } else {
@@ -1870,7 +1876,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
           {expiredCerts.map(({ course, completion }) => (
             <div key={course.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${C.errorBdr}` }}>
               <div>
-                <span style={{ fontWeight: 600, color: C.teal700 }}>{course.name}</span>
+                <span style={{ fontWeight: 600, color: C.teal700 }}>{courseFmt(course)}</span>
                 <span style={{ fontSize: 13, color: C.gray400, marginLeft: 8 }}>Expired {completion.certExpires}</span>
               </div>
               <button style={{ ...S.btnPrimary, ...S.btnSmall, background: C.error }} onClick={() => setView({ type: "course", courseId: course.id })}>
@@ -1888,7 +1894,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
           </div>
           {expiringCerts.map(({ course, daysLeft }) => (
             <div key={course.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0" }}>
-              <span style={{ fontWeight: 500, color: C.teal700 }}>{course.name} — <span style={{ color: C.warning }}>{daysLeft} days remaining</span></span>
+              <span style={{ fontWeight: 500, color: C.teal700 }}>{courseFmt(course)} — <span style={{ color: C.warning }}>{daysLeft} days remaining</span></span>
               <button style={{ ...S.btnSecondary, ...S.btnSmall }} onClick={() => setView({ type: "course", courseId: course.id })}>
                 Start Review
               </button>
@@ -1941,7 +1947,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
                   style={{ cursor: course.status === "Active" ? "pointer" : "default", flex: 1 }}
                 >
                   <div style={{ fontSize: 14, fontWeight: 600, color: C.teal700, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    {course.name}
+                    {courseFmt(course)}
                     {isOverdue && <span style={{ ...S.badge("error"), fontSize: 10 }}>OVERDUE</span>}
                   </div>
                   <div style={{ fontSize: 12, color: C.gray400, marginTop: 2 }}>
@@ -2032,7 +2038,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
                       {certStatus === "expiring" && <span style={{ color: C.warning }}><Icons.Clock /></span>}
                       {certStatus === "incomplete" && <span style={{ color: C.gray300 }}>○</span>}
                       <div>
-                        <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{course.name}</div>
+                        <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{courseFmt(course)}</div>
                         <div style={{ fontSize: 12, color: C.gray400 }}>
                           {course.durationMin} min
                           {latest && ` · Score: ${latest.score}%`}
@@ -2057,6 +2063,86 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
           </div>
         );
       })}
+
+      {/* ── Recertification Courses ── */}
+      {(() => {
+        // Find courses that require recertification AND the employee has completed at least once
+        const recertCourses = [];
+        const requiredCourseIds = getRequiredCourseIds(user, learningPaths, courses);
+        for (const cid of requiredCourseIds) {
+          const course = courses.find(c => c.id === cid);
+          if (!course || !course.recertDays || course.status !== "Active") continue;
+          if (!courseMatchesRole(course, user.role)) continue;
+          const passed = myCompletions.filter(c => c.courseId === cid && c.status === "passed").sort((a,b) => b.completedDate.localeCompare(a.completedDate));
+          if (passed.length === 0) continue; // Never completed — still in their learning path
+          const latest = passed[0];
+          const certStatus = getCertStatus(latest, course);
+          // Show in recert section if expired, expiring, or current (for visibility of next recert date)
+          recertCourses.push({ course, latest, certStatus });
+        }
+        if (recertCourses.length === 0) return null;
+
+        const expiredCount = recertCourses.filter(r => r.certStatus === "expired").length;
+        const expiringCount = recertCourses.filter(r => r.certStatus === "expiring").length;
+
+        return (
+          <div style={{ ...S.card, borderLeft: `3px solid ${expiredCount > 0 ? C.error : expiringCount > 0 ? C.warning : C.gold500}`, marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Icons.RefreshCw />
+                <span style={{ fontSize: 16, fontWeight: 600, color: C.teal700 }}>Annual Recertification</span>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                {expiredCount > 0 && <span style={S.badge("error")}>{expiredCount} Expired</span>}
+                {expiringCount > 0 && <span style={S.badge("warning")}>{expiringCount} Expiring</span>}
+                {expiredCount === 0 && expiringCount === 0 && <span style={S.badge("success")}>All Current</span>}
+              </div>
+            </div>
+            <div style={{ fontSize: 13, color: C.gray400, marginBottom: 12 }}>
+              These courses require annual recertification. Retake the quiz before the expiration date to maintain your certification.
+            </div>
+            {recertCourses.map(({ course, latest, certStatus }) => (
+              <div
+                key={course.id}
+                onClick={() => setView({ type: "course", courseId: course.id })}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderBottom: `1px solid ${C.gray100}`, cursor: "pointer", borderRadius: 4, transition: "background 0.15s", background: certStatus === "expired" ? C.errorBg : "transparent" }}
+                onMouseEnter={e => e.currentTarget.style.background = certStatus === "expired" ? "rgba(196,75,59,0.08)" : C.teal50}
+                onMouseLeave={e => e.currentTarget.style.background = certStatus === "expired" ? C.errorBg : "transparent"}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {certStatus === "current" && <span style={{ color: C.success }}><Icons.Check /></span>}
+                  {certStatus === "expired" && <span style={{ color: C.error }}><Icons.Alert /></span>}
+                  {certStatus === "expiring" && <span style={{ color: C.warning }}><Icons.Clock /></span>}
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{courseFmt(course)}</div>
+                    <div style={{ fontSize: 12, color: C.gray400 }}>
+                      Last completed: {latest.completedDate} · Score: {latest.score}%
+                      {latest.certExpires && (
+                        <span style={{ color: certStatus === "expired" ? C.error : certStatus === "expiring" ? C.warning : C.success, fontWeight: 600, marginLeft: 6 }}>
+                          · {certStatus === "expired" ? `Expired ${latest.certExpires}` : `Expires ${latest.certExpires}`}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  {(certStatus === "current" || certStatus === "expiring") && (
+                    <button onClick={(e) => { e.stopPropagation(); printCertificate(user.name, course.name, course.code, latest.score, latest.completedDate, latest.certExpires, course.recertDays); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 8px", fontSize: 11, color: C.gold700, borderColor: C.gold500, display: "inline-flex", alignItems: "center", gap: 4 }} title="View Certificate">
+                      <Icons.Award /> Cert
+                    </button>
+                  )}
+                  {(certStatus === "expired" || certStatus === "expiring") && (
+                    <button onClick={(e) => { e.stopPropagation(); setView({ type: "course", courseId: course.id }); }} style={{ ...S.btnPrimary, ...S.btnSmall, padding: "3px 10px", fontSize: 11 }}>
+                      Retake
+                    </button>
+                  )}
+                  <Icons.ChevronRight />
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* ── Voluntary Courses ── */}
       {(() => {
@@ -2098,7 +2184,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
                       {certStatus === "expiring" && <span style={{ color: C.warning }}><Icons.Clock /></span>}
                       {certStatus === "incomplete" && <span style={{ color: C.gray300 }}>○</span>}
                       <div>
-                        <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{course.name}</div>
+                        <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{courseFmt(course)}</div>
                         <div style={{ fontSize: 12, color: C.gray400 }}>
                           {course.category} · {course.durationMin} min
                           {latest && ` · Score: ${latest.score}%`}
@@ -2176,7 +2262,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
           <div>
             <span style={{ ...S.badge("info"), marginBottom: 8 }}>{course.category}</span>
-            <div style={{ fontSize: 22, fontWeight: 700, color: C.teal700, marginTop: 8 }}>{course.name}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.teal700, marginTop: 8 }}>{courseFmt(course)}</div>
             <div style={{ fontSize: 14, color: C.gray400, marginTop: 4 }}>{course.description}</div>
             <div style={{ fontSize: 13, color: C.gray400, marginTop: 8, display: "flex", gap: 16, flexWrap: "wrap" }}>
               <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Icons.Clock /> {course.durationMin} min total</span>
@@ -2429,7 +2515,7 @@ function QuizView({ courseId, user, completions, setCompletions, onQuizSubmit, o
       <div style={inline ? {} : S.card}>
         <div style={{ textAlign: "center", padding: "20px 0" }}>
           <div style={{ fontSize: 18, fontWeight: 600, color: C.teal700, marginBottom: 8 }}>
-            {course.name} — Assessment
+            {courseFmt(course)} — Assessment
           </div>
           <div style={{ fontSize: 14, color: C.gray400, marginBottom: 4 }}>
             {quiz.questions.length} questions · Passing score: {CONFIG.passingScore}%
@@ -2812,7 +2898,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                     return (
                     <div key={cs.course.id} style={{ padding: "10px 0", borderBottom: `1px solid ${C.gray100}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                       <div>
-                        <div style={{ fontSize: 13, fontWeight: 500, color: C.teal700 }}>{cs.course.name}</div>
+                        <div style={{ fontSize: 13, fontWeight: 500, color: C.teal700 }}>{courseFmt(cs.course)}</div>
                         <div style={{ fontSize: 12, color: C.gray400 }}>
                           {cs.completion ? `${cs.completion.score}% · ${cs.completion.completedDate}` : "Not started"}
                           {cs.completion?.certExpires && ` · Exp: ${cs.completion.certExpires}`}
@@ -2845,7 +2931,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                         const isOverdue = cs.dueDate && cs.dueDate < new Date().toISOString().split("T")[0];
                         return (
                         <tr key={cs.course.id}>
-                          <td style={{ ...S.td, fontSize: 13, fontWeight: 500 }}>{cs.course.name}</td>
+                          <td style={{ ...S.td, fontSize: 13, fontWeight: 500 }}>{courseFmt(cs.course)}</td>
                           <td style={{ ...S.td, fontSize: 13 }}>{cs.course.category}</td>
                           <td style={{ ...S.td, fontSize: 13 }}>{cs.completion ? `${cs.completion.score}%` : "—"}</td>
                           <td style={{ ...S.td, fontSize: 13 }}>{cs.completion?.completedDate || "—"}</td>
@@ -2879,7 +2965,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                         return (
                           <div key={course.id} style={{ padding: "8px 0", borderBottom: `1px solid ${C.gray100}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
                             <div>
-                              <div style={{ fontSize: 13, fontWeight: 500, color: C.teal600 }}>{course.name}</div>
+                              <div style={{ fontSize: 13, fontWeight: 500, color: C.teal600 }}>{courseFmt(course)}</div>
                               <div style={{ fontSize: 12, color: C.gray400 }}>
                                 {course.category} · Enrolled {enrollment.enrolledDate}
                                 {latest && ` · Score: ${latest.score}%`}
@@ -3037,7 +3123,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                           <td style={{ ...S.td, fontSize: 12, fontWeight: 500 }}>{r.name}</td>
                           <td style={{ ...S.td, fontSize: 12 }}>{r.role}</td>
                           <td style={{ ...S.td, fontSize: 12 }}><span style={r.active === "Active" ? S.badge("success") : S.badge("neutral")}>{r.active}</span></td>
-                          <td style={{ ...S.td, fontSize: 12 }}>{r.courseCode && <span style={{ color: C.gold500, marginRight: 4 }}>{r.courseCode}</span>}{r.courseName}</td>
+                          <td style={{ ...S.td, fontSize: 12 }}>{r.courseCode ? `${r.courseCode} — ${r.courseName}` : r.courseName}</td>
                           <td style={{ ...S.td, fontSize: 12 }}><span style={r.type === "Required" ? S.badge("warning") : S.badge("info")}>{r.type}</span></td>
                           <td style={{ ...S.td, fontSize: 12 }}><span style={S.badge(r.status === "Complete" ? "success" : r.status === "Expired" ? "error" : r.status === "Expiring" ? "warning" : "neutral")}>{r.status}</span></td>
                           <td style={{ ...S.td, fontSize: 12 }}>{r.score || "—"}{r.score ? "%" : ""}</td>
@@ -3163,7 +3249,7 @@ function TrainingLibraryView({ user, completions, enrollments, assignments, onEn
                     onClick={() => course.status !== "Coming Soon" && setView({ type: "course", courseId: course.id })}
                     style={{ cursor: course.status === "Coming Soon" ? "default" : "pointer" }}
                   >
-                    <div style={{ fontSize: 16, fontWeight: 600, color: C.teal700, marginBottom: 6 }}>{course.code && <span style={{ fontSize: 12, color: C.gold500, marginRight: 6 }}>{course.code}</span>}{course.name}</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: C.teal700, marginBottom: 6 }}>{courseFmt(course)}</div>
                     <div style={{ fontSize: 13, color: C.gray400, marginBottom: 12, lineHeight: 1.4 }}>{course.description}</div>
                   </div>
                 </div>
@@ -3624,7 +3710,7 @@ function PathForm({ item, onClose }) {
         <div style={{maxHeight:200,overflowY:"auto",border:`1px solid ${C.gray200}`,borderRadius:4,marginTop:4}}>{courses.filter(c => c.status !== "Archived").map(course => (
           <div key={course.id} onClick={()=>toggleCourse(course.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",cursor:"pointer",borderBottom:`1px solid ${C.gray100}`,background:form.courseIds.includes(course.id)?C.teal50:C.white}}>
             <span style={{width:18,height:18,borderRadius:3,border:`2px solid ${form.courseIds.includes(course.id)?C.teal700:C.gray200}`,background:form.courseIds.includes(course.id)?C.teal700:C.white,color:C.white,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,flexShrink:0}}>{form.courseIds.includes(course.id)?"\u2713":""}</span>
-            <div><div style={{fontSize:14,fontWeight:500,color:C.teal700}}>{course.code && <span style={{fontSize:12,color:C.gold500,marginRight:6}}>{course.code}</span>}{course.name}</div><div style={{fontSize:12,color:C.gray400}}>{course.category} \u00b7 {course.durationMin} min{course.status === "Coming Soon" ? " \u00b7 Coming Soon" : ""}</div></div>
+            <div><div style={{fontSize:14,fontWeight:500,color:C.teal700}}>{courseFmt(course)}</div><div style={{fontSize:12,color:C.gray400}}>{course.category} \u00b7 {course.durationMin} min{course.status === "Coming Soon" ? " \u00b7 Coming Soon" : ""}</div></div>
           </div>
         ))}</div>
       </FormField>
@@ -3700,7 +3786,7 @@ function LessonForm({ item, courseId, onClose }) {
   return (
     <Modal title={isEdit ? `Edit Lesson — ${item.title}` : "Add Lesson"} onClose={onClose}>
       <FormField label="Lesson Title"><input style={S.input} value={form.title} onChange={e => set("title", e.target.value)} /></FormField>
-      <FormRow><FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{c.code ? `${c.code} — ` : ""}{c.name}</option>)}</select></FormField><FormField label="Sort Order"><input style={S.input} type="number" value={form.order} onChange={e => set("order", e.target.value)} /></FormField></FormRow>
+      <FormRow><FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{courseFmt(c)}</option>)}</select></FormField><FormField label="Sort Order"><input style={S.input} type="number" value={form.order} onChange={e => set("order", e.target.value)} /></FormField></FormRow>
       <FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField>
       <FormField label="Video URL" hint="YouTube, Vimeo, SharePoint Stream, or direct video link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
       <FormField label="Presentation URL" hint="Paste the SharePoint embed code or URL — iframe tags and formatting are cleaned automatically"><input style={S.input} value={form.documentUrl} onChange={e => {
@@ -3927,7 +4013,7 @@ function ManageView({ mobile }) {
                 <div key={course.id} style={{ padding: "12px 0", borderBottom: `1px solid ${C.gray100}`, cursor: "pointer", opacity: course.status === "Archived" ? 0.5 : 1 }} onClick={() => setExpandedCourse(course)}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     {course.code && <span style={{ fontSize: 12, fontWeight: 600, color: C.gold500 }}>{course.code}</span>}
-                    <span style={{ fontSize: 14, fontWeight: 600, color: C.teal700 }}>{course.name}</span>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: C.teal700 }}>{courseFmt(course)}</span>
                     <span style={S.badge(statusBadge)}>{course.status}</span>
                   </div>
                   <div style={{ fontSize: 13, color: C.gray400, marginTop: 2 }}>{course.category} \u00b7 {course.durationMin} min \u00b7 {cLessons.length} lessons \u00b7 {cQuiz.length} quiz Qs</div>
@@ -3961,7 +4047,7 @@ function ManageView({ mobile }) {
                   return (
                     <tr key={course.id} style={{ cursor: "pointer", opacity: course.status === "Archived" ? 0.5 : 1 }} onClick={() => setExpandedCourse(course)}>
                       <td style={{ ...S.td, fontWeight: 500, color: C.gold500, whiteSpace: "nowrap", fontSize: 12 }}>{course.code || "\u2014"}</td>
-                      <td style={{ ...S.td, fontWeight: 500, color: C.teal700 }}>{course.name}</td>
+                      <td style={{ ...S.td, fontWeight: 500, color: C.teal700 }}>{courseFmt(course)}</td>
                       <td style={S.td}><span style={S.badge(statusBadge)}>{course.status}</span></td>
                       <td style={S.td}>{course.category}</td>
                       <td style={S.td}>{course.durationMin} min</td>
@@ -3994,7 +4080,7 @@ function ManageView({ mobile }) {
             <div style={{ ...S.card, marginBottom: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: C.teal700 }}>{course.name}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: C.teal700 }}>{courseFmt(course)}</div>
                   <div style={{ fontSize: 13, color: C.gray400, marginTop: 2 }}>{course.description}</div>
                   <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
                     <span style={S.badge("info")}>{course.category}</span>
