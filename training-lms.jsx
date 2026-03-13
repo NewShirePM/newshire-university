@@ -1825,8 +1825,10 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
     if (status === "expiring") expiringCerts.push({ course, completion: latest, daysLeft: daysBetween(TODAY, latest.certExpires) });
   });
 
-  const totalRequired = paths.reduce((sum, p) => sum + p.courseIds.length, 0);
-  const totalCompleted = paths.reduce((sum, p) => sum + getPathProgress(p.id, user.id, completions, courses, learningPaths, user.role).completed, 0);
+  // KPI totals — use getPathProgress which already filters to Active + role-matched courses
+  const pathProgressList = paths.map(p => getPathProgress(p.id, user.id, completions, courses, learningPaths, user.role));
+  const totalRequired = pathProgressList.reduce((sum, p) => sum + p.total, 0);
+  const totalCompleted = pathProgressList.reduce((sum, p) => sum + p.completed, 0);
 
   return (
     <div>
@@ -2066,18 +2068,16 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
 
       {/* ── Recertification Courses ── */}
       {(() => {
-        // Find courses that require recertification AND the employee has completed at least once
+        // Find ALL courses that require recertification AND the employee has completed at least once
+        // This checks every Active recert course, not just ones in learning paths
         const recertCourses = [];
-        const requiredCourseIds = getRequiredCourseIds(user, learningPaths, courses);
-        for (const cid of requiredCourseIds) {
-          const course = courses.find(c => c.id === cid);
-          if (!course || !course.recertDays || course.status !== "Active") continue;
+        for (const course of courses) {
+          if (!course.recertDays || course.status !== "Active") continue;
           if (!courseMatchesRole(course, user.role)) continue;
-          const passed = myCompletions.filter(c => c.courseId === cid && c.status === "passed").sort((a,b) => b.completedDate.localeCompare(a.completedDate));
+          const passed = myCompletions.filter(c => c.courseId === course.id && c.status === "passed").sort((a,b) => b.completedDate.localeCompare(a.completedDate));
           if (passed.length === 0) continue; // Never completed — still in their learning path
           const latest = passed[0];
           const certStatus = getCertStatus(latest, course);
-          // Show in recert section if expired, expiring, or current (for visibility of next recert date)
           recertCourses.push({ course, latest, certStatus });
         }
         if (recertCourses.length === 0) return null;
