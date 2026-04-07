@@ -1532,7 +1532,11 @@ function App() {
   const isLive = authState === "ready"; // connected to SharePoint
   const [notifBanner, setNotifBanner] = useState(null); // { text, type } for admin notification feedback
 
-  // ── Admin auto-scan: cert expirations + Monday manager report ──
+  // ── Admin auto-scan: cert expirations only ──
+  // NOTE: Monday manager compliance reports are handled exclusively by Power Automate.
+  // Removed React-side runMondayManagerReport call — it caused duplicate emails on every
+  // login due to a race condition between concurrent sessions before the NotificationLog
+  // deduplication key could be written. PA scheduled flow is the single source of truth.
   useEffect(() => {
     if (!isLive || !currentUser) return;
     const isAdmin = currentUser.appRole === "admin";
@@ -1540,19 +1544,11 @@ function App() {
       try {
         const token = await getToken();
         if (!token) return;
-        // Cert expiration scanner runs for admins
+        // Cert expiration scanner runs for admins only
         if (isAdmin) {
           const adminEmails = employees.filter(e => e.active && e.appRole === "admin").map(e => e.email);
           const certsSent = await runCertExpirationScan(token, employees, completions, courses, adminEmails.length > 0 ? adminEmails : [CONFIG.adminEmail]);
           if (certsSent > 0) setNotifBanner({ text: `Sent ${certsSent} certification expiration notification${certsSent > 1 ? "s" : ""}.`, type: "info" });
-        }
-        // Monday manager report runs for everyone (each manager gets their own)
-        const mgrSent = await runMondayManagerReport(token, employees, completions, courses, learningPaths);
-        if (mgrSent > 0 && isAdmin) {
-          setNotifBanner(prev => prev
-            ? { text: `${prev.text} Sent ${mgrSent} Monday manager report${mgrSent > 1 ? "s" : ""}.`, type: "info" }
-            : { text: `Sent ${mgrSent} Monday manager report${mgrSent > 1 ? "s" : ""}.`, type: "info" }
-          );
         }
         // Auto-dismiss banner after 8 seconds
         if (notifBanner || true) setTimeout(() => setNotifBanner(null), 8000);
