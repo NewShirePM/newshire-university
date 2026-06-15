@@ -268,6 +268,7 @@ function normalizeLessons(items) {
       title: f.Title || "",
       order: f.LessonSortOrder || 1,
       durationMin: f.LessonDurationMin || 0,
+      body: f.LessonBody || "", // Written lesson content (HTML) — renders in-app, no video needed
       videoUrl: f.VideoURL || null,
       documentUrl: f.DocumentURL || null,
       documentTitle: f.DocumentTitle || null,
@@ -2308,6 +2309,11 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
             </div>
             <button onClick={() => setActiveLesson(null)} style={{ background: "none", border: "none", cursor: "pointer", color: C.gray400 }}><Icons.X /></button>
           </div>
+          {/* Written lesson content (HTML) — renders in-app, no media required */}
+          {activeLesson.body && (
+            <div className="ns-lesson-body" style={{ marginBottom: 16, fontSize: 15, lineHeight: 1.7, color: C.gray700 || "#2D3B40" }}
+              dangerouslySetInnerHTML={{ __html: activeLesson.body }} />
+          )}
           {/* Video embed */}
           {activeLesson.videoUrl && (() => {
             const url = activeLesson.videoUrl;
@@ -2351,7 +2357,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
             );
           })()}
           {/* No content yet */}
-          {!activeLesson.videoUrl && !activeLesson.documentUrl && (
+          {!activeLesson.body && !activeLesson.videoUrl && !activeLesson.documentUrl && (
             <div style={{
               background: C.dark, borderRadius: 6, height: mobile ? 120 : 180, display: "flex", flexDirection: "column",
               alignItems: "center", justifyContent: "center", color: C.gray300, marginBottom: 16
@@ -2425,10 +2431,11 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
                 <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{lesson.title}</div>
                 <div style={{ fontSize: 12, color: C.gray400, display: "flex", gap: 10, marginTop: 2 }}>
                   <span>{lesson.durationMin} min</span>
+                  {lesson.body && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Doc /> Reading</span>}
                   {lesson.videoUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Play /> Video</span>}
                   {lesson.documentUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Doc /> Slides</span>}
                   {lesson.supplements && lesson.supplements.length > 0 && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Download /> {lesson.supplements.length > 1 ? `${lesson.supplements.length} Docs` : "Worksheet"}</span>}
-                  {!lesson.videoUrl && !lesson.documentUrl && <span style={{ color: C.gold500 }}>Content pending</span>}
+                  {!lesson.body && !lesson.videoUrl && !lesson.documentUrl && <span style={{ color: C.gold500 }}>Content pending</span>}
                 </div>
               </div>
               {isActive ? <span style={{ fontSize: 12, fontWeight: 600, color: C.gold600 }}>PLAYING</span> : <Icons.Play />}
@@ -3752,7 +3759,7 @@ function LessonForm({ item, courseId, onClose }) {
     if (item?.supplements && item.supplements.length > 0) return item.supplements.map(s => ({...s}));
     return [];
   };
-  const [form, setForm] = useState({ title: item?.title||"", courseId: item?.courseId||courseId||"", order: item?.order||(lessons.filter(l=>l.courseId===(item?.courseId||courseId)).length+1), durationMin: item?.durationMin||10, videoUrl: item?.videoUrl||"", documentUrl: item?.documentUrl||"", documentTitle: item?.documentTitle||"" });
+  const [form, setForm] = useState({ title: item?.title||"", courseId: item?.courseId||courseId||"", order: item?.order||(lessons.filter(l=>l.courseId===(item?.courseId||courseId)).length+1), durationMin: item?.durationMin||10, body: item?.body||"", videoUrl: item?.videoUrl||"", documentUrl: item?.documentUrl||"", documentTitle: item?.documentTitle||"" });
   const [supplements, setSupplements] = useState(initSupplements);
   const [saving, setSaving] = useState(false);
   const set = (k,v) => setForm(p => ({...p,[k]:v}));
@@ -3762,7 +3769,7 @@ function LessonForm({ item, courseId, onClose }) {
   const handleSave = async () => {
     if (!form.title.trim()||!form.courseId) return alert("Title and course are required.");
     setSaving(true);
-    const fields = { Title: form.title.trim(), CourseIDLookupId: parseInt(form.courseId,10), LessonSortOrder: parseInt(form.order,10)||1, LessonDurationMin: parseInt(form.durationMin,10)||0, DocumentTitle: form.documentTitle || "" };
+    const fields = { Title: form.title.trim(), CourseIDLookupId: parseInt(form.courseId,10), LessonSortOrder: parseInt(form.order,10)||1, LessonDurationMin: parseInt(form.durationMin,10)||0, LessonBody: form.body || "", DocumentTitle: form.documentTitle || "" };
     if (form.videoUrl.trim()) fields.VideoURL = form.videoUrl.trim();
     if (form.documentUrl.trim()) {
       let cleanUrl = form.documentUrl.trim();
@@ -3783,7 +3790,7 @@ function LessonForm({ item, courseId, onClose }) {
     try {
       if (isLive) {
         const token = await getToken();
-        const lessonData = { title: fields.Title, courseId: String(fields.CourseIDLookupId), order: fields.LessonSortOrder, durationMin: fields.LessonDurationMin, videoUrl: form.videoUrl || null, documentUrl: form.documentUrl || null, documentTitle: form.documentTitle || null, supplements: validSupps };
+        const lessonData = { title: fields.Title, courseId: String(fields.CourseIDLookupId), order: fields.LessonSortOrder, durationMin: fields.LessonDurationMin, body: form.body || "", videoUrl: form.videoUrl || null, documentUrl: form.documentUrl || null, documentTitle: form.documentTitle || null, supplements: validSupps };
         if (isEdit) { await spUpdate(token, CONFIG.lists.lessons, item.id, fields); setLessons(prev => prev.map(l => l.id === item.id ? { ...l, ...lessonData } : l).sort((a, b) => a.order - b.order)); }
         else { const res = await spCreate(token, CONFIG.lists.lessons, fields); setLessons(prev => [...prev, { id: String(res.id), ...lessonData }].sort((a, b) => a.order - b.order)); }
       }
@@ -3802,7 +3809,10 @@ function LessonForm({ item, courseId, onClose }) {
       <FormField label="Lesson Title"><input style={S.input} value={form.title} onChange={e => set("title", e.target.value)} /></FormField>
       <FormRow><FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{courseFmt(c)}</option>)}</select></FormField><FormField label="Sort Order"><input style={S.input} type="number" value={form.order} onChange={e => set("order", e.target.value)} /></FormField></FormRow>
       <FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField>
-      <FormField label="Video URL" hint="YouTube, Vimeo, SharePoint Stream, or direct video link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
+      <FormField label="Lesson Content" hint="Written lesson text (HTML). Renders directly in the app — no video or slides required. Headings, lists, and key-takeaway callouts supported.">
+        <textarea style={{ ...S.input, minHeight: 220, fontFamily: "'Source Sans 3',sans-serif", lineHeight: 1.5, resize: "vertical" }} value={form.body} onChange={e => set("body", e.target.value)} placeholder="<h4>Section heading</h4>&#10;<p>Lesson narration...</p>&#10;<ul><li>Key point</li></ul>&#10;<div class='callout'>Key takeaway</div>" />
+      </FormField>
+      <FormField label="Video URL" hint="Optional — YouTube, Vimeo, SharePoint Stream, or direct video link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
       <FormField label="Presentation URL" hint="Paste the SharePoint embed code or URL — iframe tags and formatting are cleaned automatically"><input style={S.input} value={form.documentUrl} onChange={e => {
         let v = e.target.value;
         const srcMatch = v.match(/src=["']([^"']+)["']/);
@@ -3890,6 +3900,180 @@ function QuizForm({ item, courseId, onClose }) {
 }
 
 // ============================================================
+// SOP IMPORTER (Admin) — paste a generated course package, create
+// the Course + Lessons + Quiz (and optionally attach to a path)
+// in one click. Package shape is documented in COURSE-PACKAGE.md.
+// ============================================================
+function SOPImporter() {
+  const { courses, setCourses, learningPaths, setLearningPaths, setLessons, setQuizzes, isLive, getToken } = useData();
+  const [raw, setRaw] = useState("");
+  const [pkg, setPkg] = useState(null);
+  const [parseErr, setParseErr] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [logLines, setLogLines] = useState([]);
+  const [done, setDone] = useState(false);
+  const addLog = (line) => setLogLines(prev => [...prev, line]);
+
+  const validate = (p) => {
+    const errs = [];
+    if (!p || typeof p !== "object") return ["Package must be a JSON object."];
+    if (!p.course || !p.course.name) errs.push("Missing course.name");
+    if (!Array.isArray(p.lessons) || p.lessons.length === 0) errs.push("At least one lesson is required (lessons[]).");
+    (p.lessons || []).forEach((l, i) => { if (!l.title) errs.push(`Lesson ${i + 1} missing title`); if (!l.body && !l.videoUrl && !l.documentUrl) errs.push(`Lesson ${i + 1} ("${l.title || "?"}") has no content (body/videoUrl/documentUrl)`); });
+    const qs = p.quiz?.questions || [];
+    qs.forEach((q, i) => {
+      if (!q.question) errs.push(`Quiz Q${i + 1} missing question`);
+      if (!q.A || !q.B) errs.push(`Quiz Q${i + 1} needs at least options A and B`);
+      if (!["A", "B", "C", "D"].includes(q.correct)) errs.push(`Quiz Q${i + 1} correct must be A/B/C/D`);
+    });
+    if (p.course?.code && courses.some(c => c.code && c.code.toLowerCase() === p.course.code.toLowerCase()))
+      errs.push(`A course with code "${p.course.code}" already exists — change the code or it will duplicate.`);
+    return errs;
+  };
+
+  const handleParse = () => {
+    setParseErr(""); setPkg(null); setDone(false); setLogLines([]);
+    let p;
+    try { p = JSON.parse(raw); } catch (e) { setParseErr("Invalid JSON: " + e.message); return; }
+    const errs = validate(p);
+    if (errs.length) { setParseErr(errs.join(" • ")); return; }
+    setPkg(p);
+  };
+
+  const handleImport = async () => {
+    if (!pkg) return;
+    setImporting(true); setLogLines([]); setDone(false);
+    try {
+      const token = isLive ? await getToken() : null;
+      const c = pkg.course;
+      const courseFields = {
+        Title: c.name.trim(), CourseCode: (c.code || "").trim(), CourseDescription: c.description || "",
+        Category: c.category || "Operations", DurationMin: parseInt(c.durationMin, 10) || 0,
+        RecertDays: parseInt(c.recertDays, 10) || 0, PassingScore: parseInt(c.passingScore, 10) || CONFIG.passingScore,
+        SortOrder: parseInt(c.sortOrder, 10) || 999, CourseActive: true, CourseStatus: c.status || "Active",
+        CourseRoles: Array.isArray(c.roles) ? c.roles.join(",") : "", ActivatedDate: new Date().toISOString(),
+      };
+      let courseId;
+      if (isLive) { const res = await spCreate(token, CONFIG.lists.courses, courseFields); courseId = String(res.id); }
+      else { courseId = "imp_" + Date.now(); }
+      addLog(`✓ Course created: ${courseFields.Title}${courseFields.CourseCode ? ` (${courseFields.CourseCode})` : ""}`);
+      setCourses(prev => [...prev, {
+        id: courseId, name: courseFields.Title, code: courseFields.CourseCode, description: courseFields.CourseDescription,
+        category: courseFields.Category, durationMin: courseFields.DurationMin, recertDays: courseFields.RecertDays || null,
+        passingScore: courseFields.PassingScore, sortOrder: courseFields.SortOrder, status: courseFields.CourseStatus,
+        roles: Array.isArray(c.roles) ? c.roles : [], activatedDate: new Date().toISOString().split("T")[0],
+      }].sort((a, b) => a.sortOrder - b.sortOrder));
+
+      // Lessons
+      let order = 0;
+      for (const l of pkg.lessons) {
+        order += 1;
+        const lOrder = parseInt(l.order, 10) || order;
+        const supps = Array.isArray(l.supplements) ? l.supplements.filter(s => s && s.url) : [];
+        const lf = {
+          Title: l.title.trim(), CourseIDLookupId: parseInt(courseId, 10) || courseId, LessonSortOrder: lOrder,
+          LessonDurationMin: parseInt(l.durationMin, 10) || 0, LessonBody: l.body || "",
+          VideoURL: l.videoUrl || "", DocumentURL: l.documentUrl || "", DocumentTitle: l.documentTitle || "",
+          SupplementURL: supps.length ? JSON.stringify(supps.map(s => ({ title: s.title || "Supplemental Material", url: s.url }))) : "",
+        };
+        let lid;
+        if (isLive) { const res = await spCreate(token, CONFIG.lists.lessons, lf); lid = String(res.id); }
+        else { lid = `impl_${Date.now()}_${lOrder}`; }
+        setLessons(prev => [...prev, {
+          id: lid, courseId: String(courseId), title: lf.Title, order: lOrder, durationMin: lf.LessonDurationMin,
+          body: lf.LessonBody, videoUrl: l.videoUrl || null, documentUrl: l.documentUrl || null,
+          documentTitle: l.documentTitle || null, supplements: supps,
+        }].sort((a, b) => a.order - b.order));
+      }
+      addLog(`✓ ${pkg.lessons.length} lesson${pkg.lessons.length > 1 ? "s" : ""} created`);
+
+      // Quiz
+      const qs = pkg.quiz?.questions || [];
+      let qi = 0;
+      for (const q of qs) {
+        qi += 1;
+        const qf = {
+          Title: q.question.trim(), QuizCourseIDLookupId: parseInt(courseId, 10) || courseId,
+          OptionA: q.A || "", OptionB: q.B || "", OptionC: q.C || "", OptionD: q.D || "",
+          CorrectAnswer: q.correct, QuizSortOrder: qi,
+        };
+        let qid;
+        if (isLive) { const res = await spCreate(token, CONFIG.lists.quizzes, qf); qid = String(res.id); }
+        else { qid = `impq_${Date.now()}_${qi}`; }
+        setQuizzes(prev => {
+          const next = { ...prev }; const cid = String(courseId);
+          if (!next[cid]) next[cid] = { questions: [] };
+          next[cid] = { questions: [...next[cid].questions, { id: qid, question: qf.Title, options: { A: qf.OptionA, B: qf.OptionB, C: qf.OptionC, D: qf.OptionD }, correct: qf.CorrectAnswer }] };
+          return next;
+        });
+      }
+      if (qs.length) addLog(`✓ ${qs.length} quiz question${qs.length > 1 ? "s" : ""} created`);
+
+      // Optional: attach to existing learning path by name
+      if (pkg.pathName) {
+        const path = learningPaths.find(p => p.name.toLowerCase() === String(pkg.pathName).toLowerCase());
+        if (!path) { addLog(`⚠ Learning path "${pkg.pathName}" not found — skipped. Add the course to a path manually.`); }
+        else {
+          const newCourseIds = [...path.courseIds, String(courseId)];
+          if (isLive) await spUpdate(token, CONFIG.lists.paths, path.id, { CourseIDs: newCourseIds.join(",") });
+          setLearningPaths(prev => prev.map(p => p.id === path.id ? { ...p, courseIds: newCourseIds } : p));
+          addLog(`✓ Attached to learning path: ${path.name}`);
+        }
+      }
+
+      addLog(isLive ? "✅ Import complete — course is live in SharePoint." : "✅ Import complete (DEMO mode — not persisted to SharePoint).");
+      setDone(true); setPkg(null); setRaw("");
+    } catch (err) {
+      addLog("❌ Import failed: " + err.message);
+      addLog("Some items may have been created. Check the Courses tab before re-importing to avoid duplicates.");
+    }
+    setImporting(false);
+  };
+
+  const lessonsWithBody = pkg ? pkg.lessons.filter(l => l.body).length : 0;
+
+  return (
+    <div style={S.card}>
+      <div style={S.cardTitle}>Import Course from SOP</div>
+      <div style={{ fontSize: 13, color: C.gray400, marginBottom: 14, lineHeight: 1.6 }}>
+        Paste a generated <strong>course package</strong> (JSON) below and click Validate, then Import. This creates the course,
+        all written lessons, and the quiz in one step. For role-specific variants, import one package per role.
+        See <strong>COURSE-PACKAGE.md</strong> for the format.
+      </div>
+      <textarea
+        style={{ ...S.input, minHeight: 220, fontFamily: mono, fontSize: 12.5, lineHeight: 1.5, resize: "vertical" }}
+        value={raw} onChange={e => setRaw(e.target.value)} placeholder='{ "course": { "name": "..." }, "lessons": [...], "quiz": { "questions": [...] } }'
+        disabled={importing}
+      />
+      {parseErr && <div style={{ marginTop: 10, padding: "10px 14px", background: C.errorBg, color: C.error, borderRadius: 6, fontSize: 13 }}>{parseErr}</div>}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+        <button style={S.btnSecondary} onClick={handleParse} disabled={importing || !raw.trim()}>Validate</button>
+        {pkg && <button style={S.btnPrimary} onClick={handleImport} disabled={importing}>{importing ? "Importing…" : `Import "${pkg.course.name}"`}</button>}
+      </div>
+
+      {pkg && (
+        <div style={{ marginTop: 16, padding: "14px 16px", background: C.teal50, borderRadius: 8, border: `1px solid ${C.teal100}` }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.teal700, marginBottom: 8 }}>Ready to import:</div>
+          <div style={{ fontSize: 13, color: C.teal700, lineHeight: 1.8 }}>
+            <div><strong>{pkg.course.name}</strong>{pkg.course.code ? ` · ${pkg.course.code}` : ""} · {pkg.course.category || "Operations"} · {pkg.course.durationMin || 0} min</div>
+            <div>Roles: {Array.isArray(pkg.course.roles) && pkg.course.roles.length ? pkg.course.roles.join(", ") : "All roles"}{pkg.course.recertDays ? ` · Recert every ${pkg.course.recertDays} days` : ""}</div>
+            <div>{pkg.lessons.length} lessons ({lessonsWithBody} written) · {(pkg.quiz?.questions || []).length} quiz questions{pkg.pathName ? ` · → path "${pkg.pathName}"` : ""}</div>
+            {pkg.source?.sopName && <div style={{ color: C.gray400, fontSize: 12 }}>Source: {pkg.source.sopName}</div>}
+          </div>
+        </div>
+      )}
+
+      {logLines.length > 0 && (
+        <div style={{ marginTop: 16, padding: "12px 16px", background: done ? C.successBg : C.gray100, borderRadius: 8, fontFamily: mono, fontSize: 12.5, lineHeight: 1.8, color: C.teal700 }}>
+          {logLines.map((l, i) => <div key={i}>{l}</div>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // ============================================================
 // MANAGE VIEW (Admin — Full CRUD)
 // ============================================================
@@ -3908,7 +4092,7 @@ function ManageView({ mobile }) {
     <div>
       {/* Sub-tabs */}
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-        {[["employees", "Employees"], ["paths", "Learning Paths"], ["courses", "Courses"], ["config", "Settings"]].map(([key, label]) => (
+        {[["employees", "Employees"], ["paths", "Learning Paths"], ["courses", "Courses"], ["import", "Import Course"], ["config", "Settings"]].map(([key, label]) => (
           <button
             key={key}
             onClick={() => { setSubTab(key); setExpandedCourse(null); }}
@@ -4158,6 +4342,9 @@ function ManageView({ mobile }) {
           </div>
         );
       })()}
+
+      {/* ── IMPORT COURSE TAB ── */}
+      {subTab === "import" && <SOPImporter />}
 
       {/* ── SETTINGS TAB ── */}
       {subTab === "config" && (

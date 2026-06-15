@@ -1,0 +1,13 @@
+# Confidential SOP-derived course content — NEVER commit to this PUBLIC repo.
+# These are pasted into the in-app Import Course tool, which writes them to SharePoint.
+course-packages/
+
+# Employee data exports / data files
+*.csv
+*.iqy
+*.xlsx
+
+# Local tooling
+node_modules/
+package-lock.json
+package.json
