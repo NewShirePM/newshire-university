@@ -3762,7 +3762,19 @@ function LessonForm({ item, courseId, onClose }) {
   const [form, setForm] = useState({ title: item?.title||"", courseId: item?.courseId||courseId||"", order: item?.order||(lessons.filter(l=>l.courseId===(item?.courseId||courseId)).length+1), durationMin: item?.durationMin||10, body: item?.body||"", videoUrl: item?.videoUrl||"", documentUrl: item?.documentUrl||"", documentTitle: item?.documentTitle||"" });
   const [supplements, setSupplements] = useState(initSupplements);
   const [saving, setSaving] = useState(false);
+  const [showPreview, setShowPreview] = useState(true);
+  const bodyRef = useRef(null);
   const set = (k,v) => setForm(p => ({...p,[k]:v}));
+  // Insert/wrap formatting tags at the cursor (or around the selected text) in the body textarea
+  const applyBodyTag = (before, after, placeholder) => {
+    const ta = bodyRef.current;
+    const cur = form.body || "";
+    if (!ta) { set("body", cur + before + (placeholder || "") + after); return; }
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    const sel = cur.slice(s, e) || placeholder || "";
+    set("body", cur.slice(0, s) + before + sel + after + cur.slice(e));
+    requestAnimationFrame(() => { ta.focus(); const p = s + before.length; ta.setSelectionRange(p, p + sel.length); });
+  };
   const addSupplement = () => setSupplements(prev => [...prev, { title: "", url: "" }]);
   const updateSupplement = (i, k, v) => setSupplements(prev => prev.map((s, idx) => idx === i ? { ...s, [k]: v } : s));
   const removeSupplement = (i) => setSupplements(prev => prev.filter((_, idx) => idx !== i));
@@ -3805,12 +3817,31 @@ function LessonForm({ item, courseId, onClose }) {
     setSaving(false);
   };
   return (
-    <Modal title={isEdit ? `Edit Lesson — ${item.title}` : "Add Lesson"} onClose={onClose}>
+    <Modal title={isEdit ? `Edit Lesson — ${item.title}` : "Add Lesson"} onClose={onClose} width={680}>
       <FormField label="Lesson Title"><input style={S.input} value={form.title} onChange={e => set("title", e.target.value)} /></FormField>
       <FormRow><FormField label="Course"><select style={S.select} value={form.courseId} onChange={e => set("courseId", e.target.value)}><option value="">— Select —</option>{courses.map(c => <option key={c.id} value={c.id}>{courseFmt(c)}</option>)}</select></FormField><FormField label="Sort Order"><input style={S.input} type="number" value={form.order} onChange={e => set("order", e.target.value)} /></FormField></FormRow>
       <FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField>
-      <FormField label="Lesson Content" hint="Written lesson text (HTML). Renders directly in the app — no video or slides required. Headings, lists, and key-takeaway callouts supported.">
-        <textarea style={{ ...S.input, minHeight: 220, fontFamily: "'Source Sans 3',sans-serif", lineHeight: 1.5, resize: "vertical" }} value={form.body} onChange={e => set("body", e.target.value)} placeholder="<h4>Section heading</h4>&#10;<p>Lesson narration...</p>&#10;<ul><li>Key point</li></ul>&#10;<div class='callout'>Key takeaway</div>" />
+      <FormField label="Lesson Content" hint="The written lesson that shows in the app — no video or slides needed. Select text and click a button to format it, or type directly. Preview shows exactly how learners see it.">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+          {[
+            ["Heading", "<h4>", "</h4>", "Section heading"],
+            ["Paragraph", "<p>", "</p>", "Lesson text"],
+            ["Bullets", "<ul><li>", "</li></ul>", "List item"],
+            ["Bold", "<strong>", "</strong>", "important"],
+            ["Key takeaway", "<div class='callout'><strong>Key takeaway</strong>", "</div>", "Your key point."],
+            ["Trainer script", "<div class='script'>", "</div>", "\"Spoken line.\""],
+          ].map(([label, b, a, ph]) => (
+            <button key={label} type="button" onClick={() => applyBodyTag(b, a, ph)} style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 12, padding: "4px 10px" }}>{label}</button>
+          ))}
+          <button type="button" onClick={() => setShowPreview(p => !p)} style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 12, padding: "4px 10px", marginLeft: "auto", color: C.teal700, borderColor: C.gold500 }}>{showPreview ? "Hide Preview" : "Show Preview"}</button>
+        </div>
+        <textarea ref={bodyRef} style={{ ...S.input, minHeight: 200, fontFamily: mono, fontSize: 13, lineHeight: 1.5, resize: "vertical" }} value={form.body} onChange={e => set("body", e.target.value)} placeholder="Select text and click a format button above, or type your lesson here." />
+        {showPreview && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: C.gray400, marginBottom: 6 }}>Preview</div>
+            <div className="ns-lesson-body" style={{ border: `1px solid ${C.gray200}`, borderRadius: 6, padding: "12px 16px", background: C.white, fontSize: 15, lineHeight: 1.7, color: "#2D3B40", maxHeight: 320, overflowY: "auto" }} dangerouslySetInnerHTML={{ __html: form.body || "<p style='color:#A8B0B0'>Nothing to preview yet.</p>" }} />
+          </div>
+        )}
       </FormField>
       <FormField label="Video URL" hint="Optional — YouTube, Vimeo, SharePoint Stream, or direct video link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
       <FormField label="Presentation URL" hint="Paste the SharePoint embed code or URL — iframe tags and formatting are cleaned automatically"><input style={S.input} value={form.documentUrl} onChange={e => {
