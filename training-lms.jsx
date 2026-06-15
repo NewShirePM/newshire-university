@@ -3549,7 +3549,7 @@ function EmployeeForm({ item, onClose }) {
 
 // ── COURSE FORM ──
 function CourseForm({ item, onClose }) {
-  const { employees, enrollments, learningPaths, setCourses, isLive, getToken } = useData();
+  const { employees, enrollments, learningPaths, setCourses, setLearningPaths, isLive, getToken } = useData();
   const isEdit = !!item;
   const wasComingSoon = isEdit && item.status === "Coming Soon";
   const categories = ["Onboarding", "Compliance", "Leasing", "Maintenance", "Operations", "Safety", "Financial", "Management"];
@@ -3636,10 +3636,25 @@ function CourseForm({ item, onClose }) {
     setSaving(false);
   };
   const handleDelete = async () => {
-    if (!confirm(`PERMANENTLY DELETE "${form.name}"? This cannot be undone. All lessons and quiz questions for this course will be orphaned.`)) return;
+    const affectedPaths = learningPaths.filter(p => p.courseIds.includes(item.id));
+    const pathNote = affectedPaths.length ? ` It will also be removed from ${affectedPaths.length} learning path${affectedPaths.length > 1 ? "s" : ""}: ${affectedPaths.map(p => p.name).join(", ")}.` : "";
+    if (!confirm(`PERMANENTLY DELETE "${form.name}"? This cannot be undone. All lessons and quiz questions for this course will be orphaned.${pathNote}`)) return;
     if (!confirm("Are you absolutely sure? This is a permanent delete.")) return;
     setSaving(true);
-    try { if (isLive) { const token = await getToken(); await spDelete(token, CONFIG.lists.courses, item.id); } setCourses(prev => prev.filter(c => c.id !== item.id)); onClose(); } catch (err) { alert("Delete failed: " + err.message); }
+    try {
+      if (isLive) {
+        const token = await getToken();
+        // Remove the course from any learning paths first, so no dangling reference is left behind
+        for (const p of affectedPaths) {
+          const newIds = p.courseIds.filter(cid => cid !== item.id);
+          await spUpdate(token, CONFIG.lists.paths, p.id, { CourseIDs: newIds.join(",") });
+        }
+        await spDelete(token, CONFIG.lists.courses, item.id);
+      }
+      if (affectedPaths.length) setLearningPaths(prev => prev.map(p => p.courseIds.includes(item.id) ? { ...p, courseIds: p.courseIds.filter(cid => cid !== item.id) } : p));
+      setCourses(prev => prev.filter(c => c.id !== item.id));
+      onClose();
+    } catch (err) { alert("Delete failed: " + err.message); }
     setSaving(false);
   };
   return (
