@@ -2733,7 +2733,11 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
     const overduePaths = pathDueStatuses.filter(d => d.dueStatus === "overdue");
     const dueSoonPaths = pathDueStatuses.filter(d => d.dueStatus === "due-soon");
 
-    const compliancePct = requiredCourses.length > 0 ? Math.round((completed / requiredCourses.length) * 100) : 100;
+    // Denominator must be the applicable (existing + Active) courses, NOT the raw path course-id
+    // count — otherwise a deleted/Coming-Soon course still lingering in a path's CourseIDs inflates
+    // the total and drags compliance below 100% for fully-compliant employees.
+    const applicableCount = courseStatuses.length;
+    const compliancePct = applicableCount > 0 ? Math.round((completed / applicableCount) * 100) : 100;
     const overallStatus = expired > 0 || overduePaths.length > 0 ? "non-compliant" : missing > 0 ? "in-progress" : expiring > 0 || dueSoonPaths.length > 0 ? "expiring" : "compliant";
 
     // Find who this person reports to for context (reportsTo can be ID or email)
