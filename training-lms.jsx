@@ -3943,7 +3943,12 @@ function SOPImporter() {
   const [importing, setImporting] = useState(false);
   const [logLines, setLogLines] = useState([]);
   const [done, setDone] = useState(false);
+  const [opts, setOpts] = useState(null); // editable import settings (status, recert, roles, path assignment)
   const addLog = (line) => setLogLines(prev => [...prev, line]);
+  const ROLE_OPTIONS = [...new Set(["Property Manager","Leasing Agent","Maintenance Technician","Service Manager","Area Director","Virtual Assistant", ...courses.flatMap(c => c.roles || [])])].sort();
+  const setOpt = (k, v) => setOpts(o => ({ ...o, [k]: v }));
+  const toggleRoleIn = (key, role) => setOpts(o => ({ ...o, [key]: o[key].includes(role) ? o[key].filter(r => r !== role) : [...o[key], role] }));
+  const chip = (active) => ({ padding: "5px 12px", fontSize: 13, borderRadius: 9999, cursor: "pointer", fontFamily: "inherit", border: `1px solid ${active ? C.teal700 : C.gray200}`, background: active ? C.teal50 : C.white, color: active ? C.teal700 : C.gray400, fontWeight: active ? 600 : 400 });
 
   const validate = (p) => {
     const errs = [];
@@ -3963,11 +3968,24 @@ function SOPImporter() {
   };
 
   const handleParse = () => {
-    setParseErr(""); setPkg(null); setDone(false); setLogLines([]);
+    setParseErr(""); setPkg(null); setDone(false); setLogLines([]); setOpts(null);
     let p;
     try { p = JSON.parse(raw); } catch (e) { setParseErr("Invalid JSON: " + e.message); return; }
     const errs = validate(p);
     if (errs.length) { setParseErr(errs.join(" • ")); return; }
+    const roles = Array.isArray(p.course.roles) ? p.course.roles : [];
+    const matchPath = p.pathName ? learningPaths.find(lp => lp.name.toLowerCase() === String(p.pathName).toLowerCase()) : null;
+    setOpts({
+      status: p.course.status || "Active",
+      recertDays: p.course.recertDays || 0,
+      roles,
+      pathMode: matchPath ? "existing" : (p.pathName ? "new" : "none"),
+      existingPathId: matchPath ? matchPath.id : (learningPaths[0]?.id || ""),
+      newPathName: p.pathName || `${p.course.name} Path`,
+      newPathRequired: true,
+      newPathDueDays: 30,
+      newPathRoles: roles,
+    });
     setPkg(p);
   };
 
@@ -3977,12 +3995,13 @@ function SOPImporter() {
     try {
       const token = isLive ? await getToken() : null;
       const c = pkg.course;
+      const recert = parseInt(opts.recertDays, 10) || 0;
       const courseFields = {
         Title: c.name.trim(), CourseCode: (c.code || "").trim(), CourseDescription: c.description || "",
         Category: c.category || "Operations", DurationMin: parseInt(c.durationMin, 10) || 0,
-        RecertDays: parseInt(c.recertDays, 10) || 0, PassingScore: parseInt(c.passingScore, 10) || CONFIG.passingScore,
-        SortOrder: parseInt(c.sortOrder, 10) || 999, CourseActive: true, CourseStatus: c.status || "Active",
-        CourseRoles: Array.isArray(c.roles) ? c.roles.join(",") : "", ActivatedDate: new Date().toISOString(),
+        RecertDays: recert, PassingScore: parseInt(c.passingScore, 10) || CONFIG.passingScore,
+        SortOrder: parseInt(c.sortOrder, 10) || 999, CourseActive: opts.status !== "Archived", CourseStatus: opts.status,
+        CourseRoles: opts.roles.join(","), ActivatedDate: new Date().toISOString(),
       };
       let courseId;
       if (isLive) { const res = await spCreate(token, CONFIG.lists.courses, courseFields); courseId = String(res.id); }
@@ -3990,9 +4009,9 @@ function SOPImporter() {
       addLog(`✓ Course created: ${courseFields.Title}${courseFields.CourseCode ? ` (${courseFields.CourseCode})` : ""}`);
       setCourses(prev => [...prev, {
         id: courseId, name: courseFields.Title, code: courseFields.CourseCode, description: courseFields.CourseDescription,
-        category: courseFields.Category, durationMin: courseFields.DurationMin, recertDays: courseFields.RecertDays || null,
+        category: courseFields.Category, durationMin: courseFields.DurationMin, recertDays: recert || null,
         passingScore: courseFields.PassingScore, sortOrder: courseFields.SortOrder, status: courseFields.CourseStatus,
-        roles: Array.isArray(c.roles) ? c.roles : [], activatedDate: new Date().toISOString().split("T")[0],
+        roles: opts.roles, activatedDate: new Date().toISOString().split("T")[0],
       }].sort((a, b) => a.sortOrder - b.sortOrder));
 
       // Lessons
@@ -4040,20 +4059,30 @@ function SOPImporter() {
       }
       if (qs.length) addLog(`✓ ${qs.length} quiz question${qs.length > 1 ? "s" : ""} created`);
 
-      // Optional: attach to existing learning path by name
-      if (pkg.pathName) {
-        const path = learningPaths.find(p => p.name.toLowerCase() === String(pkg.pathName).toLowerCase());
-        if (!path) { addLog(`⚠ Learning path "${pkg.pathName}" not found — skipped. Add the course to a path manually.`); }
+      // Learning-path assignment (drives whether the course is "required")
+      if (opts.pathMode === "existing" && opts.existingPathId) {
+        const path = learningPaths.find(p => p.id === opts.existingPathId);
+        if (!path) { addLog("⚠ Selected learning path not found — skipped."); }
         else {
           const newCourseIds = [...path.courseIds, String(courseId)];
           if (isLive) await spUpdate(token, CONFIG.lists.paths, path.id, { CourseIDs: newCourseIds.join(",") });
           setLearningPaths(prev => prev.map(p => p.id === path.id ? { ...p, courseIds: newCourseIds } : p));
-          addLog(`✓ Attached to learning path: ${path.name}`);
+          addLog(`✓ Added to learning path: ${path.name}${path.required ? " — required" : " — optional"}`);
         }
+      } else if (opts.pathMode === "new" && opts.newPathName.trim()) {
+        const pf = {
+          Title: opts.newPathName.trim(), PathDescription: "", Roles: opts.newPathRoles.join(","),
+          CourseIDs: String(courseId), Required: !!opts.newPathRequired, DueDays: parseInt(opts.newPathDueDays, 10) || 0, PathActive: true,
+        };
+        let pid;
+        if (isLive) { const res = await spCreate(token, CONFIG.lists.paths, pf); pid = String(res.id); }
+        else { pid = "imppath_" + Date.now(); }
+        setLearningPaths(prev => [...prev, { id: pid, name: pf.Title, description: "", roles: opts.newPathRoles, courseIds: [String(courseId)], required: pf.Required, dueDays: pf.DueDays || null }]);
+        addLog(`✓ Created learning path "${pf.Title}"${pf.Required ? " — required" : " — optional"}${pf.DueDays ? `, due in ${pf.DueDays} days` : ""}`);
       }
 
       addLog(isLive ? "✅ Import complete — course is live in SharePoint." : "✅ Import complete (DEMO mode — not persisted to SharePoint).");
-      setDone(true); setPkg(null); setRaw("");
+      setDone(true); setPkg(null); setRaw(""); setOpts(null);
     } catch (err) {
       addLog("❌ Import failed: " + err.message);
       addLog("Some items may have been created. Check the Courses tab before re-importing to avoid duplicates.");
@@ -4080,18 +4109,56 @@ function SOPImporter() {
 
       <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
         <button style={S.btnSecondary} onClick={handleParse} disabled={importing || !raw.trim()}>Validate</button>
-        {pkg && <button style={S.btnPrimary} onClick={handleImport} disabled={importing}>{importing ? "Importing…" : `Import "${pkg.course.name}"`}</button>}
       </div>
 
-      {pkg && (
-        <div style={{ marginTop: 16, padding: "14px 16px", background: C.teal50, borderRadius: 8, border: `1px solid ${C.teal100}` }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: C.teal700, marginBottom: 8 }}>Ready to import:</div>
-          <div style={{ fontSize: 13, color: C.teal700, lineHeight: 1.8 }}>
-            <div><strong>{pkg.course.name}</strong>{pkg.course.code ? ` · ${pkg.course.code}` : ""} · {pkg.course.category || "Operations"} · {pkg.course.durationMin || 0} min</div>
-            <div>Roles: {Array.isArray(pkg.course.roles) && pkg.course.roles.length ? pkg.course.roles.join(", ") : "All roles"}{pkg.course.recertDays ? ` · Recert every ${pkg.course.recertDays} days` : ""}</div>
-            <div>{pkg.lessons.length} lessons ({lessonsWithBody} written) · {(pkg.quiz?.questions || []).length} quiz questions{pkg.pathName ? ` · → path "${pkg.pathName}"` : ""}</div>
-            {pkg.source?.sopName && <div style={{ color: C.gray400, fontSize: 12 }}>Source: {pkg.source.sopName}</div>}
-          </div>
+      {pkg && opts && (
+        <div style={{ marginTop: 16, padding: 16, background: C.teal50, borderRadius: 8, border: `1px solid ${C.teal100}` }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.teal700 }}>{pkg.course.name}{pkg.course.code ? ` · ${pkg.course.code}` : ""}</div>
+          <div style={{ fontSize: 12.5, color: C.gray400, marginBottom: 14 }}>{pkg.course.category || "Operations"} · {pkg.course.durationMin || 0} min · {pkg.lessons.length} lessons ({lessonsWithBody} written) · {(pkg.quiz?.questions || []).length} quiz questions{pkg.source?.sopName ? ` · Source: ${pkg.source.sopName}` : ""}</div>
+
+          <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: C.gold700, marginBottom: 4 }}>Import settings</div>
+          <FormRow>
+            <FormField label="Status"><select style={S.select} value={opts.status} onChange={e => setOpt("status", e.target.value)}><option value="Active">Active</option><option value="Coming Soon">Coming Soon</option><option value="Archived">Archived</option></select></FormField>
+            <FormField label="Recertification (days)" hint="0 = none · 365 = annual"><input style={S.input} type="number" value={opts.recertDays} onChange={e => setOpt("recertDays", e.target.value)} /></FormField>
+          </FormRow>
+
+          <FormField label="Visible to roles" hint={opts.roles.length ? "Only these roles will see the course" : "All roles will see the course"}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+              <button type="button" onClick={() => setOpt("roles", [])} style={chip(opts.roles.length === 0)}>{opts.roles.length === 0 ? "✓ " : ""}All roles</button>
+              {ROLE_OPTIONS.map(r => <button type="button" key={r} onClick={() => toggleRoleIn("roles", r)} style={chip(opts.roles.includes(r))}>{opts.roles.includes(r) ? "✓ " : ""}{r}</button>)}
+            </div>
+          </FormField>
+
+          <FormField label="Learning path" hint="A course shows as Required only when it's in a Required path matching the learner's role.">
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 8, marginTop: 4 }}>
+              {[["none", "Don't add to a path"], ["existing", "Add to existing path"], ["new", "Create new path"]].map(([v, l]) => (
+                <label key={v} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer", color: C.teal700 }}>
+                  <input type="radio" name="ns-pathmode" checked={opts.pathMode === v} onChange={() => setOpt("pathMode", v)} style={{ accentColor: C.gold600 }} /> {l}
+                </label>
+              ))}
+            </div>
+            {opts.pathMode === "existing" && (
+              learningPaths.length
+                ? <select style={S.select} value={opts.existingPathId} onChange={e => setOpt("existingPathId", e.target.value)}>{learningPaths.map(p => <option key={p.id} value={p.id}>{p.name}{p.required ? " (required)" : " (optional)"}</option>)}</select>
+                : <div style={{ fontSize: 13, color: C.error }}>No learning paths exist yet — choose "Create new path".</div>
+            )}
+            {opts.pathMode === "new" && (
+              <div style={{ border: `1px solid ${C.gray200}`, borderRadius: 6, padding: 12, background: C.white }}>
+                <FormField label="New path name"><input style={S.input} value={opts.newPathName} onChange={e => setOpt("newPathName", e.target.value)} /></FormField>
+                <FormRow>
+                  <FormField label="Required?"><select style={S.select} value={opts.newPathRequired ? "yes" : "no"} onChange={e => setOpt("newPathRequired", e.target.value === "yes")}><option value="yes">Required</option><option value="no">Optional</option></select></FormField>
+                  <FormField label="Due (days)" hint="0 = no due date"><input style={S.input} type="number" value={opts.newPathDueDays} onChange={e => setOpt("newPathDueDays", e.target.value)} /></FormField>
+                </FormRow>
+                <FormField label="Path applies to roles" hint={opts.newPathRoles.length ? "" : "Select at least one role (or this path matches no one)"}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                    {ROLE_OPTIONS.map(r => <button type="button" key={r} onClick={() => toggleRoleIn("newPathRoles", r)} style={chip(opts.newPathRoles.includes(r))}>{opts.newPathRoles.includes(r) ? "✓ " : ""}{r}</button>)}
+                  </div>
+                </FormField>
+              </div>
+            )}
+          </FormField>
+
+          <button style={{ ...S.btnPrimary, marginTop: 8 }} onClick={handleImport} disabled={importing}>{importing ? "Importing…" : `Import "${pkg.course.name}"`}</button>
         </div>
       )}
 

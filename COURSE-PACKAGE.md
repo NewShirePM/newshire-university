@@ -9,8 +9,11 @@ with **minimal manual work**. You never hand-write training content or hand-ente
 2. **Me (Claude):** Read the SOP, generate a **course package** (`.json`) — course metadata, written
    lessons (the SOP's trainer scripts + steps become readable in-app lessons), and a quiz bank.
    For roles that need different training, I generate one package per role (auto-tailored).
-3. **You:** Open **Manage → Import Course**, paste the JSON, click **Validate** then **Import**.
-   The app creates the Course + Lessons + Quiz in SharePoint in one click. Done.
+3. **You:** Open **Manage → Import Course**, paste the JSON, click **Validate**. In the
+   **Import settings** panel set the status, recertification period, visible-to roles, and the
+   learning path (none / add to an existing path / create a new Required path with a due date) —
+   the path assignment is what makes the course show as **Required**. Then click **Import** and the
+   app creates the Course + Lessons + Quiz (and the path link) in SharePoint in one step. Done.
 
 The generated `.json` files live in `course-packages/` so we have a versioned record of every course.
 
@@ -63,7 +66,7 @@ it's missing. Safe to re-run — it skips anything already present.
       }
     ]
   },
-  "pathName": "Leasing Certification",        // optional — appends the new course to this existing learning path
+  "pathName": "Leasing Certification",        // optional — pre-selects this path in the import screen (you can override there)
   "source": { "sopName": "Application Processing SOP", "sopUrl": "https://vanrockre.sharepoint.com/..." }
 }
 ```
