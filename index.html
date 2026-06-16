@@ -27,7 +27,9 @@
   <script src="https://unpkg.com/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Pinned to 7.x: Babel 8 defaults JSX to the automatic runtime (injects a react/jsx-runtime
+       import) which breaks this classic-script + React-UMD setup. Do not remove the @7 pin. -->
+  <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
   <script type="text/babel" src="training-lms.jsx"></script>
   <script type="text/babel">
     const root = ReactDOM.createRoot(document.getElementById('root'));
