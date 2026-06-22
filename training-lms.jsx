@@ -503,6 +503,18 @@ async function logNotification(token, key) {
   } catch (e) { console.error("Failed to log notification:", e); }
 }
 
+// All persistent assignment-notification keys ever logged (not date-scoped), so each employee is
+// notified about a given course only once. Falls back to fetching all keys if startswith filtering fails.
+async function getAssignmentKeys(token) {
+  try {
+    const items = await spGet(token, CONFIG.lists.notifications, { filter: `startswith(fields/NotificationKey,'assigned')` });
+    return new Set(items.map(i => i.fields.NotificationKey || ""));
+  } catch {
+    try { const all = await spGet(token, CONFIG.lists.notifications); return new Set(all.map(i => i.fields.NotificationKey || "")); }
+    catch { return new Set(); }
+  }
+}
+
 // ============================================================
 // DUE DATE UTILITIES
 // ============================================================
@@ -697,6 +709,61 @@ async function runCertExpirationScan(token, employees, completions, courses, adm
     }
   }
   return sent;
+}
+
+// ============================================================
+// NEW-ASSIGNMENT SCAN — emails an employee when a required course becomes newly
+// assigned to them (a new course added to their role's path, OR a new hire receiving
+// their initial list). One consolidated email per employee; dedup is persistent so no
+// one is emailed twice. First run silently seeds existing assignments (no mass blast).
+// ============================================================
+async function runAssignmentScan(token, employees, learningPaths, courses) {
+  const keys = await getAssignmentKeys(token);
+  const BASELINE = "assigned_baseline_v1";
+  const baselineDone = keys.has(BASELINE);
+
+  // Required + Active + role-matched courses currently assigned to an employee (with due dates)
+  const assignedFor = (emp) => {
+    const reqPaths = getEmployeePaths(emp, learningPaths).filter(p => p.required);
+    const ids = [...new Set(reqPaths.flatMap(p => p.courseIds))];
+    return ids
+      .map(cid => courses.find(c => c.id === cid))
+      .filter(c => c && c.status === "Active" && courseMatchesRole(c, emp.role))
+      .map(c => {
+        const path = reqPaths.find(p => p.dueDays && p.courseIds.includes(c.id));
+        return { course: c, dueDate: path ? getCourseDueDate(c, path, emp) : null };
+      });
+  };
+
+  const activeEmps = employees.filter(e => e.active && !isTrainingExempt(e) && e.email);
+
+  // First run: record current assignments without emailing, so only genuinely new ones notify later
+  if (!baselineDone) {
+    for (const emp of activeEmps) {
+      for (const { course } of assignedFor(emp)) await logNotification(token, `assigned_${emp.id}_${course.id}`);
+    }
+    await logNotification(token, BASELINE);
+    return { sent: 0, baseline: true };
+  }
+
+  let sent = 0;
+  for (const emp of activeEmps) {
+    const newly = assignedFor(emp).filter(({ course }) => !keys.has(`assigned_${emp.id}_${course.id}`));
+    if (newly.length === 0) continue;
+    const rows = newly.map(({ course, dueDate }) =>
+      `<li><strong>${courseFmt(course)}</strong>${dueDate ? ` &mdash; due ${new Date(dueDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}` : ""}</li>`).join("");
+    const bodyHtml = `<p>Hi ${emp.name.split(" ")[0]},</p>` +
+      `<p>The following training ${newly.length > 1 ? "courses have" : "course has"} been assigned to you in NewShire University:</p>` +
+      `<ul>${rows}</ul>` +
+      `<p>Log in to NewShire University to get started.</p>`;
+    const subject = newly.length > 1 ? `New training assigned (${newly.length} courses)` : `New training assigned: ${courseFmt(newly[0].course)}`;
+    try {
+      await sendEmail(token, emp.email, subject, emailTemplate(bodyHtml, subject));
+      for (const { course } of newly) await logNotification(token, `assigned_${emp.id}_${course.id}`);
+      sent++;
+    } catch (e) { console.error(`Assignment email failed for ${emp.email}:`, e); }
+  }
+  return { sent, baseline: false };
 }
 
 // ============================================================
@@ -1549,7 +1616,11 @@ function App() {
         if (isAdmin) {
           const adminEmails = employees.filter(e => e.active && e.appRole === "admin").map(e => e.email);
           const certsSent = await runCertExpirationScan(token, employees, completions, courses, adminEmails.length > 0 ? adminEmails : [CONFIG.adminEmail]);
-          if (certsSent > 0) setNotifBanner({ text: `Sent ${certsSent} certification expiration notification${certsSent > 1 ? "s" : ""}.`, type: "info" });
+          const assignResult = await runAssignmentScan(token, employees, learningPaths, courses);
+          const msgs = [];
+          if (certsSent > 0) msgs.push(`${certsSent} certification reminder${certsSent > 1 ? "s" : ""}`);
+          if (assignResult.sent > 0) msgs.push(`${assignResult.sent} new-assignment email${assignResult.sent > 1 ? "s" : ""}`);
+          if (msgs.length) setNotifBanner({ text: `Sent ${msgs.join(" and ")}.`, type: "info" });
         }
         // Auto-dismiss banner after 8 seconds
         if (notifBanner || true) setTimeout(() => setNotifBanner(null), 8000);
