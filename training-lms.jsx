@@ -4086,6 +4086,31 @@ function QuizForm({ item, courseId, onClose }) {
   );
 }
 
+// Reusable rich-body editor: formatting toolbar (wraps selection) + textarea + live preview.
+function BodyEditor({ value, onChange, minHeight = 150 }) {
+  const ref = useRef(null);
+  const [show, setShow] = useState(true);
+  const apply = (before, after, ph) => {
+    const ta = ref.current; const cur = value || "";
+    if (!ta) { onChange(cur + before + (ph || "") + after); return; }
+    const s = ta.selectionStart, e = ta.selectionEnd;
+    const sel = cur.slice(s, e) || ph || "";
+    onChange(cur.slice(0, s) + before + sel + after + cur.slice(e));
+    requestAnimationFrame(() => { ta.focus(); const p = s + before.length; ta.setSelectionRange(p, p + sel.length); });
+  };
+  const BTN = [["Heading", "<h4>", "</h4>", "Section heading"], ["Paragraph", "<p>", "</p>", "Lesson text"], ["Bullets", "<ul><li>", "</li></ul>", "List item"], ["Bold", "<strong>", "</strong>", "important"], ["Key takeaway", "<div class='callout'><strong>Key takeaway</strong>", "</div>", "Your key point."], ["Trainer script", "<div class='script'>", "</div>", "\"Spoken line.\""]];
+  return (
+    <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 5 }}>
+        {BTN.map(([l, b, a, ph]) => <button key={l} type="button" onClick={() => apply(b, a, ph)} style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 11, padding: "3px 8px" }}>{l}</button>)}
+        <button type="button" onClick={() => setShow(s => !s)} style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 11, padding: "3px 8px", marginLeft: "auto" }}>{show ? "Hide preview" : "Show preview"}</button>
+      </div>
+      <textarea ref={ref} value={value || ""} onChange={e => onChange(e.target.value)} style={{ ...S.input, minHeight, fontFamily: mono, fontSize: 12.5, lineHeight: 1.5, resize: "vertical" }} />
+      {show && <div className="ns-lesson-body" style={{ marginTop: 6, border: `1px solid ${C.gray200}`, borderRadius: 6, padding: "10px 14px", background: C.white, fontSize: 14, lineHeight: 1.7, color: "#2D3B40" }} dangerouslySetInnerHTML={{ __html: value || "<p style='color:#A8B0B0'>Nothing to preview.</p>" }} />}
+    </div>
+  );
+}
+
 // ============================================================
 // SOP IMPORTER (Admin) — paste a generated course package, create
 // the Course + Lessons + Quiz (and optionally attach to a path)
@@ -4101,6 +4126,17 @@ function SOPImporter() {
   const [done, setDone] = useState(false);
   const [opts, setOpts] = useState(null); // editable import settings (status, recert, roles, path assignment)
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  // Live edits to the parsed package (so the user can fix content without touching JSON)
+  const setCourseField = (k, v) => setPkg(p => ({ ...p, course: { ...p.course, [k]: v } }));
+  const setLessonField = (i, k, v) => setPkg(p => { const ls = [...p.lessons]; ls[i] = { ...ls[i], [k]: v }; return { ...p, lessons: ls }; });
+  const addLesson = () => setPkg(p => ({ ...p, lessons: [...p.lessons, { title: "New Lesson", order: p.lessons.length + 1, durationMin: 5, body: "<p></p>" }] }));
+  const removeLesson = (i) => setPkg(p => ({ ...p, lessons: p.lessons.filter((_, x) => x !== i) }));
+  const moveLesson = (i, dir) => setPkg(p => { const ls = [...p.lessons]; const j = i + dir; if (j < 0 || j >= ls.length) return p; [ls[i], ls[j]] = [ls[j], ls[i]]; ls.forEach((l, idx) => l.order = idx + 1); return { ...p, lessons: ls }; });
+  const setQField = (i, k, v) => setPkg(p => { const qs = [...(p.quiz?.questions || [])]; qs[i] = { ...qs[i], [k]: v }; return { ...p, quiz: { ...p.quiz, questions: qs } }; });
+  const addQuestion = () => setPkg(p => ({ ...p, quiz: { ...(p.quiz || {}), questions: [...(p.quiz?.questions || []), { question: "New question?", A: "", B: "", C: "", D: "", correct: "A" }] } }));
+  const removeQuestion = (i) => setPkg(p => ({ ...p, quiz: { ...p.quiz, questions: (p.quiz?.questions || []).filter((_, x) => x !== i) } }));
+  const recalcDuration = () => setPkg(p => ({ ...p, course: { ...p.course, durationMin: p.lessons.reduce((s, l) => s + (parseInt(l.durationMin, 10) || 0), 0) } }));
   const addLog = (line) => setLogLines(prev => [...prev, line]);
   const ROLE_OPTIONS = [...new Set(["Property Manager","Leasing Agent","Maintenance Technician","Service Manager","Area Director","Virtual Assistant", ...courses.flatMap(c => c.roles || [])])].sort();
   const setOpt = (k, v) => setOpts(o => ({ ...o, [k]: v }));
@@ -4274,7 +4310,10 @@ function SOPImporter() {
           <div style={{ fontSize: 15, fontWeight: 700, color: C.teal700 }}>{pkg.course.name}{pkg.course.code ? ` · ${pkg.course.code}` : ""}</div>
           <div style={{ fontSize: 12.5, color: C.gray400, marginBottom: 12 }}>{pkg.course.category || "Operations"} · {pkg.course.durationMin || 0} min · {pkg.lessons.length} lessons ({lessonsWithBody} written) · {(pkg.quiz?.questions || []).length} quiz questions{pkg.source?.sopName ? ` · Source: ${pkg.source.sopName}` : ""}</div>
 
-          <button type="button" onClick={() => setPreviewOpen(o => !o)} style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 12, marginBottom: 12 }}>{previewOpen ? "▾ Hide preview" : "▸ Preview lessons & quiz"}</button>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+            <button type="button" onClick={() => { setPreviewOpen(o => !o); setEditMode(false); }} style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 12 }}>{previewOpen ? "▾ Hide preview" : "▸ Preview lessons & quiz"}</button>
+            <button type="button" onClick={() => { setEditMode(o => !o); setPreviewOpen(false); }} style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 12, borderColor: C.gold500, color: C.gold700 }}>{editMode ? "▾ Done editing" : "✎ Edit content"}</button>
+          </div>
           {previewOpen && (
             <div style={{ marginBottom: 16, border: `1px solid ${C.gray200}`, borderRadius: 8, background: C.white, padding: 16, maxHeight: 480, overflowY: "auto" }}>
               <div style={{ fontSize: 18, fontWeight: 700, color: C.teal700, marginBottom: 4 }}>{courseFmt(pkg.course)}</div>
@@ -4302,6 +4341,56 @@ function SOPImporter() {
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {editMode && (
+            <div style={{ marginBottom: 16, border: `1px solid ${C.gold500}`, borderRadius: 8, background: C.white, padding: 16 }}>
+              <div style={{ fontSize: 12, color: C.gray400, marginBottom: 12 }}>Edit anything below, then Import. Changes apply to this import only — the JSON file on disk is not modified. Use the radio button to mark the correct quiz answer.</div>
+              <FormField label="Course name"><input style={S.input} value={pkg.course.name || ""} onChange={e => setCourseField("name", e.target.value)} /></FormField>
+              <FormRow>
+                <FormField label="Code"><input style={S.input} value={pkg.course.code || ""} onChange={e => setCourseField("code", e.target.value)} /></FormField>
+                <FormField label="Category"><select style={S.select} value={pkg.course.category || "Operations"} onChange={e => setCourseField("category", e.target.value)}>{["Onboarding", "Compliance", "Leasing", "Maintenance", "Operations", "Safety", "Financial", "Management"].map(c => <option key={c} value={c}>{c}</option>)}</select></FormField>
+              </FormRow>
+              <FormField label="Description"><textarea style={{ ...S.input, minHeight: 50 }} value={pkg.course.description || ""} onChange={e => setCourseField("description", e.target.value)} /></FormField>
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 14, marginBottom: 6 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.teal700 }}>Lessons ({pkg.lessons.length}) · {pkg.lessons.reduce((s, l) => s + (parseInt(l.durationMin, 10) || 0), 0)} min</div>
+                <button type="button" onClick={recalcDuration} style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 11 }}>Set course duration = sum</button>
+              </div>
+              {pkg.lessons.map((l, i) => (
+                <div key={i} style={{ border: `1px solid ${C.gray200}`, borderRadius: 6, padding: 12, marginBottom: 10, background: C.gray50 || "#FAFBFB" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.gray400 }}>#{i + 1}</span>
+                    <input style={{ ...S.input, flex: 1, marginTop: 0 }} value={l.title || ""} onChange={e => setLessonField(i, "title", e.target.value)} placeholder="Lesson title" />
+                    <input style={{ ...S.input, width: 64, marginTop: 0 }} type="number" value={l.durationMin || 0} onChange={e => setLessonField(i, "durationMin", parseInt(e.target.value, 10) || 0)} title="Minutes" />
+                    <button type="button" onClick={() => moveLesson(i, -1)} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 7px" }} title="Move up">↑</button>
+                    <button type="button" onClick={() => moveLesson(i, 1)} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 7px" }} title="Move down">↓</button>
+                    <button type="button" onClick={() => { if (confirm("Remove this lesson?")) removeLesson(i); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 7px", color: C.error, borderColor: C.error }} title="Remove">×</button>
+                  </div>
+                  <BodyEditor value={l.body || ""} onChange={v => setLessonField(i, "body", v)} />
+                </div>
+              ))}
+              <button type="button" onClick={addLesson} style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 12 }}>+ Add lesson</button>
+
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.teal700, marginTop: 16, marginBottom: 6 }}>Quiz ({(pkg.quiz?.questions || []).length} questions)</div>
+              {(pkg.quiz?.questions || []).map((q, qi) => (
+                <div key={qi} style={{ border: `1px solid ${C.gray200}`, borderRadius: 6, padding: 12, marginBottom: 10, background: C.gray50 || "#FAFBFB" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.gray400, marginTop: 8 }}>Q{qi + 1}</span>
+                    <textarea style={{ ...S.input, flex: 1, minHeight: 40, marginTop: 0 }} value={q.question || ""} onChange={e => setQField(qi, "question", e.target.value)} placeholder="Question" />
+                    <button type="button" onClick={() => { if (confirm("Remove this question?")) removeQuestion(qi); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 7px", color: C.error, borderColor: C.error }}>×</button>
+                  </div>
+                  {["A", "B", "C", "D"].map(k => (
+                    <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <input type="radio" name={`correct-${qi}`} checked={q.correct === k} onChange={() => setQField(qi, "correct", k)} style={{ accentColor: C.success }} title="Mark correct" />
+                      <span style={{ fontSize: 12, fontWeight: 600, width: 14, color: q.correct === k ? C.success : C.gray400 }}>{k}</span>
+                      <input style={{ ...S.input, flex: 1, marginTop: 0 }} value={q[k] || ""} onChange={e => setQField(qi, k, e.target.value)} placeholder={`Option ${k}${k === "C" || k === "D" ? " (optional)" : ""}`} />
+                    </div>
+                  ))}
+                </div>
+              ))}
+              <button type="button" onClick={addQuestion} style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 12 }}>+ Add question</button>
             </div>
           )}
 
