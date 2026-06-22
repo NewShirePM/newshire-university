@@ -1518,6 +1518,7 @@ function App() {
   const [enrollments, setEnrollments] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
+  const [viewAsId, setViewAsId] = useState(null); // admin "view as employee" — id of the impersonated employee
 
   // ── UI state ──
   const [tab, setTab] = useState(0);
@@ -1779,8 +1780,11 @@ function App() {
 
   if (!currentUser) return null;
 
-  // ── Compute access ──
-  const { isAdmin, isManager, subordinateIds } = getUserAccess(currentUser, employees);
+  // ── Compute access (supports admin "View as employee") ──
+  const realIsAdmin = getUserAccess(currentUser, employees).isAdmin;
+  const effectiveUser = (realIsAdmin && viewAsId) ? (employees.find(e => e.id === viewAsId) || currentUser) : currentUser;
+  const viewingAs = effectiveUser.id !== currentUser.id;
+  const { isAdmin, isManager, subordinateIds } = getUserAccess(effectiveUser, employees);
   const showComplianceDashboard = isAdmin || isManager;
 
   const TABS = [];
@@ -1792,7 +1796,9 @@ function App() {
 
   const complianceEmployeeIds = isAdmin
     ? employees.filter(e => e.active).map(e => e.id)
-    : [...subordinateIds, currentUser.id];
+    : [...subordinateIds, effectiveUser.id];
+
+  const enterViewAs = (id) => { setViewAsId(id || null); setTab(0); setView(null); };
 
   // ── Context value ──
   const ctx = { employees, setEmployees, courses, setCourses, learningPaths, setLearningPaths, lessons, setLessons, quizzes, setQuizzes, completions, enrollments, isLive, getToken: getToken };
@@ -1824,16 +1830,31 @@ function App() {
             <div style={S.headerSubtitle}>NewShire Property Management</div>
           </div>
           <div style={S.headerUser}>
+            {realIsAdmin && (
+              <select value={viewAsId || ""} onChange={e => enterViewAs(e.target.value)} title="View the university as another employee"
+                style={{ marginRight: 12, padding: "5px 8px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.3)", background: "rgba(255,255,255,0.12)", color: "#FFFFFF", fontSize: 12, fontFamily: "inherit", maxWidth: 220 }}>
+                <option value="" style={{ color: C.teal700 }}>View as\u2026 (myself)</option>
+                {employees.filter(e => e.active).slice().sort((a, b) => a.name.localeCompare(b.name)).map(e => (
+                  <option key={e.id} value={e.id} style={{ color: C.teal700 }}>{e.name} \u2014 {e.role}</option>
+                ))}
+              </select>
+            )}
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 13, color: "#FFFFFF", fontWeight: 500 }}>{currentUser.name}</div>
+              <div style={{ fontSize: 13, color: "#FFFFFF", fontWeight: 500 }}>{effectiveUser.name}</div>
               <div style={{ fontSize: 11, color: C.teal100 }}>
-                {currentUser.role}
-                {isAdmin && " \u00b7 Admin"}
-                {!isAdmin && isManager && " \u00b7 Manager"}
+                {effectiveUser.role}
+                {viewingAs ? " \u00b7 (viewing as)" : isAdmin ? " \u00b7 Admin" : isManager ? " \u00b7 Manager" : ""}
               </div>
             </div>
           </div>
         </div>
+        {/* View-as banner */}
+        {viewingAs && (
+          <div style={{ background: C.gold500, color: "#28434C", padding: "7px 16px", fontSize: 12.5, fontWeight: 600, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
+            <span>\ud83d\udc41 Viewing as <strong>{effectiveUser.name}</strong> ({effectiveUser.role}) \u2014 this is what they see. Note: quizzes or enrollments you start will record as this employee.</span>
+            <button onClick={() => enterViewAs(null)} style={{ background: "#28434C", color: "#FFF", border: "none", borderRadius: 4, padding: "3px 12px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Exit view-as</button>
+          </div>
+        )}
 
         {/* Email Paused Banner */}
         {isAdmin && EMAIL_PAUSED && (
@@ -1854,7 +1875,7 @@ function App() {
         {/* Content */}
         <div style={S.content}>
           {activeTabName === "My Training" && (
-            <MyTrainingView user={currentUser} completions={completions} setCompletions={setCompletions} enrollments={enrollments} assignments={assignments} onUnenroll={handleUnenroll} onQuizSubmit={handleQuizSubmit} view={view} setView={setView} mobile={mobile} />
+            <MyTrainingView user={effectiveUser} completions={completions} setCompletions={setCompletions} enrollments={enrollments} assignments={assignments} onUnenroll={handleUnenroll} onQuizSubmit={handleQuizSubmit} view={view} setView={setView} mobile={mobile} />
           )}
           {activeTabName === "Team Compliance" && showComplianceDashboard && (
             <ComplianceDashboard
@@ -1862,12 +1883,12 @@ function App() {
               enrollments={enrollments}
               visibleEmployeeIds={complianceEmployeeIds}
               isAdmin={isAdmin}
-              currentUser={currentUser}
+              currentUser={effectiveUser}
               mobile={mobile}
             />
           )}
           {activeTabName === "Training Library" && (
-            <TrainingLibraryView user={currentUser} completions={completions} enrollments={enrollments} assignments={assignments} onEnroll={handleEnroll} onUnenroll={handleUnenroll} onAssign={handleAssignCourse} isManager={isManager} isAdmin={isAdmin} subordinateIds={subordinateIds} setView={(v) => { setView(v); setTab(0); }} mobile={mobile} />
+            <TrainingLibraryView user={effectiveUser} completions={completions} enrollments={enrollments} assignments={assignments} onEnroll={handleEnroll} onUnenroll={handleUnenroll} onAssign={handleAssignCourse} isManager={isManager} isAdmin={isAdmin} subordinateIds={subordinateIds} setView={(v) => { setView(v); setTab(0); }} mobile={mobile} />
           )}
           {activeTabName === "Manage" && isAdmin && (
             <ManageView mobile={mobile} />
@@ -4066,7 +4087,8 @@ function SOPImporter() {
     const roles = Array.isArray(p.course.roles) ? p.course.roles : [];
     const matchPath = p.pathName ? learningPaths.find(lp => lp.name.toLowerCase() === String(p.pathName).toLowerCase()) : null;
     setOpts({
-      status: p.course.status || "Active",
+      status: "Coming Soon", // default — admin reviews, then flips to Active in Manage → Courses
+
       recertDays: p.course.recertDays || 0,
       roles,
       pathMode: matchPath ? "existing" : (p.pathName ? "new" : "none"),
