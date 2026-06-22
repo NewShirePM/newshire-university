@@ -4100,6 +4100,7 @@ function SOPImporter() {
   const [logLines, setLogLines] = useState([]);
   const [done, setDone] = useState(false);
   const [opts, setOpts] = useState(null); // editable import settings (status, recert, roles, path assignment)
+  const [previewOpen, setPreviewOpen] = useState(false);
   const addLog = (line) => setLogLines(prev => [...prev, line]);
   const ROLE_OPTIONS = [...new Set(["Property Manager","Leasing Agent","Maintenance Technician","Service Manager","Area Director","Virtual Assistant", ...courses.flatMap(c => c.roles || [])])].sort();
   const setOpt = (k, v) => setOpts(o => ({ ...o, [k]: v }));
@@ -4271,7 +4272,38 @@ function SOPImporter() {
       {pkg && opts && (
         <div style={{ marginTop: 16, padding: 16, background: C.teal50, borderRadius: 8, border: `1px solid ${C.teal100}` }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: C.teal700 }}>{pkg.course.name}{pkg.course.code ? ` · ${pkg.course.code}` : ""}</div>
-          <div style={{ fontSize: 12.5, color: C.gray400, marginBottom: 14 }}>{pkg.course.category || "Operations"} · {pkg.course.durationMin || 0} min · {pkg.lessons.length} lessons ({lessonsWithBody} written) · {(pkg.quiz?.questions || []).length} quiz questions{pkg.source?.sopName ? ` · Source: ${pkg.source.sopName}` : ""}</div>
+          <div style={{ fontSize: 12.5, color: C.gray400, marginBottom: 12 }}>{pkg.course.category || "Operations"} · {pkg.course.durationMin || 0} min · {pkg.lessons.length} lessons ({lessonsWithBody} written) · {(pkg.quiz?.questions || []).length} quiz questions{pkg.source?.sopName ? ` · Source: ${pkg.source.sopName}` : ""}</div>
+
+          <button type="button" onClick={() => setPreviewOpen(o => !o)} style={{ ...S.btnSecondary, ...S.btnSmall, fontSize: 12, marginBottom: 12 }}>{previewOpen ? "▾ Hide preview" : "▸ Preview lessons & quiz"}</button>
+          {previewOpen && (
+            <div style={{ marginBottom: 16, border: `1px solid ${C.gray200}`, borderRadius: 8, background: C.white, padding: 16, maxHeight: 480, overflowY: "auto" }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: C.teal700, marginBottom: 4 }}>{courseFmt(pkg.course)}</div>
+              <div style={{ fontSize: 13, color: C.gray400, marginBottom: 14 }}>{pkg.course.description}</div>
+              {pkg.lessons.slice().sort((a, b) => (a.order || 0) - (b.order || 0)).map((l, i) => (
+                <div key={i} style={{ marginBottom: 18, paddingBottom: 14, borderBottom: `1px solid ${C.gray100}` }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: C.teal700, marginBottom: 6 }}>Lesson {l.order || i + 1}: {l.title} <span style={{ fontWeight: 400, color: C.gray400, fontSize: 12 }}>· {l.durationMin || 0} min</span></div>
+                  {l.body
+                    ? <div className="ns-lesson-body" style={{ fontSize: 14, lineHeight: 1.7, color: "#2D3B40" }} dangerouslySetInnerHTML={{ __html: l.body }} />
+                    : <div style={{ fontSize: 13, color: C.gray400, fontStyle: "italic" }}>{l.videoUrl ? "Video lesson" : l.documentUrl ? "Slide/document lesson" : "No written content"}</div>}
+                </div>
+              ))}
+              {(pkg.quiz?.questions || []).length > 0 && (
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: C.teal700, marginBottom: 8 }}>Quiz — {pkg.quiz.questions.length} questions · pass {pkg.course.passingScore || 80}% <span style={{ fontWeight: 400, color: C.gray400, fontSize: 12 }}>(✓ = correct answer)</span></div>
+                  {pkg.quiz.questions.map((q, qi) => (
+                    <div key={qi} style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: C.teal700 }}>{qi + 1}. {q.question}</div>
+                      {["A", "B", "C", "D"].filter(k => q[k]).map(k => (
+                        <div key={k} style={{ fontSize: 13, color: q.correct === k ? C.success : C.gray500 || C.gray400, fontWeight: q.correct === k ? 600 : 400, paddingLeft: 14 }}>
+                          {q.correct === k ? "✓ " : "  "}{k}. {q[k]}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: C.gold700, marginBottom: 4 }}>Import settings</div>
           <FormRow>
