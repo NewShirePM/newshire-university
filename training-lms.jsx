@@ -2778,13 +2778,15 @@ function QuizView({ courseId, user, completions, setCompletions, onQuizSubmit, o
 // COMPLIANCE DASHBOARD (Admin)
 // ============================================================
 function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isAdmin, currentUser, mobile }) {
-  const { employees, courses, learningPaths } = useData();
+  const { employees, courses, learningPaths, isLive, getToken } = useData();
   const [filterRole, setFilterRole] = useState("All");
   const [filterStatus, setFilterStatus] = useState("All");
   const [expandedEmp, setExpandedEmp] = useState(null);
   const [compView, setCompView] = useState("matrix"); // "matrix" or "transcripts"
   const [transcriptEmp, setTranscriptEmp] = useState("All");
   const [transcriptShowInactive, setTranscriptShowInactive] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sendResult, setSendResult] = useState(null);
 
   // Scope: Admin sees all active employees (except themselves). Manager sees only their subordinates.
   // Exclude training-exempt roles (Owner/Operator) from compliance tracking
@@ -2864,6 +2866,37 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
     return <span style={S.badge(map[status])}>{labels[status]}</span>;
   };
 
+  // Manual compliance reminder emails — sends each non-compliant employee a list of their
+  // incomplete/expired required courses (with due dates). Interim until the M365 migration.
+  const sendComplianceReminders = async () => {
+    if (EMAIL_PAUSED) { alert("Emails are currently PAUSED. Go to Manage → Settings to re-enable, then try again."); return; }
+    const targets = matrix.filter(m => m.emp.email && (m.missing > 0 || m.expired > 0));
+    if (targets.length === 0) { alert("Everyone in view has their required training complete — no reminders to send."); return; }
+    if (!confirm(`Send a compliance reminder email to ${targets.length} employee${targets.length > 1 ? "s" : ""} with incomplete or expired required training?`)) return;
+    setSending(true); setSendResult(null);
+    let sent = 0, failed = 0;
+    try {
+      const token = isLive ? await getToken() : null;
+      for (const m of targets) {
+        const items = m.courseStatuses.filter(cs => ["none", "incomplete", "expired"].includes(cs.status));
+        if (items.length === 0) continue;
+        const rows = items.map(cs =>
+          `<li><strong>${courseFmt(cs.course)}</strong>${cs.status === "expired" ? " &mdash; <span style='color:#C44B3B'>expired, needs recertification</span>" : ""}${cs.dueDate ? ` &mdash; due ${new Date(cs.dueDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}` : ""}</li>`
+        ).join("");
+        const bodyHtml = `<p>Hi ${m.emp.name.split(" ")[0]},</p>` +
+          `<p>Our records show you have required training that is <strong>incomplete or expired</strong>. Please complete the following in NewShire University:</p>` +
+          `<ul>${rows}</ul>` +
+          `<p>Log in to NewShire University to complete your training. Thank you for keeping your compliance current.</p>`;
+        try {
+          if (isLive) await sendEmail(token, m.emp.email, "Action needed: incomplete required training", emailTemplate(bodyHtml, "Incomplete Required Training"));
+          sent++;
+        } catch (e) { failed++; console.error("Reminder failed for", m.emp.email, e); }
+      }
+      setSendResult({ sent, failed, total: targets.length });
+    } catch (e) { alert("Could not send reminders: " + e.message); }
+    setSending(false);
+  };
+
   return (
     <div>
       {/* Scope Indicator */}
@@ -2927,6 +2960,18 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
           </span>
         </div>
         <ProgressBar pct={totalEmployees > 0 ? Math.round((compliant / totalEmployees) * 100) : 0} />
+        {isAdmin && (
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.gray100}` }}>
+            <button onClick={sendComplianceReminders} disabled={sending} style={{ ...S.btnPrimary, ...S.btnSmall, opacity: sending ? 0.6 : 1 }}>
+              {sending ? "Sending…" : "✉ Email Compliance Reminders"}
+            </button>
+            <span style={{ fontSize: 12.5, color: C.gray400 }}>
+              {sendResult
+                ? `Sent ${sendResult.sent} of ${sendResult.total}${sendResult.failed ? ` · ${sendResult.failed} failed` : ""}.`
+                : `Emails everyone in view with incomplete or expired required training (${matrix.filter(m => m.missing > 0 || m.expired > 0).length}).`}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Filters */}
