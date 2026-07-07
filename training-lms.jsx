@@ -7,9 +7,9 @@ const { useState, useEffect, useCallback, useRef, useMemo, createContext, useCon
 // CONFIG — Update per-app
 // ============================================================
 const CONFIG = {
-  clientId: "32e75ffa-747a-4cf0-8209-6a19150c4547",
-  tenantId: "33575d04-ca7b-4396-8011-9eaea4030b46",
-  siteId: "vanrockre.sharepoint.com,a02c1cd8-9f1f-4827-8286-7b6b7ce74232,01202419-6625-4499-b0d5-8ceb1cffdba3",
+  clientId: "b0bfcfc0-5e4f-4b58-a90d-b16f7a9f10d7",
+  tenantId: "5e932bcd-838c-4dae-b838-f6d22d7c6b8a",
+  siteId: "newshirepmcom.sharepoint.com,f5d74a99-8b23-477c-aed0-c1682efa5de1,0aa4ab90-0ddc-4a81-a803-06d4f2e1a7d8",
   lists: {
     users:        "Employees",
     courses:      "TrainingCourses",
@@ -225,6 +225,12 @@ function normalizeCourses(items) {
         roles: roles, // empty = all roles, populated = only these roles
         createdDate: item.createdDateTime ? item.createdDateTime.split("T")[0] : null,
         activatedDate: f.ActivatedDate ? f.ActivatedDate.split("T")[0] : null,
+        // Content versioning: `version` = current content version; `reqVersion` = the minimum
+        // completed version that still counts (bumped only when an update requires re-training).
+        version: f.Version || 1,
+        reqVersion: f.ReqVersion || 1,
+        versionNote: f.VersionNote || "",
+        versionDate: f.VersionDate ? f.VersionDate.split("T")[0] : null,
       };
     })
     .sort((a, b) => a.sortOrder - b.sortOrder);
@@ -318,6 +324,7 @@ function normalizeCompletions(items, employeesByEmail) {
       score: f.Score || 0,
       status: (f.CompStatus || "").toLowerCase(),
       certExpires: f.CertExpires ? f.CertExpires.split("T")[0] : null,
+      completedVersion: f.CompletedVersion || 1, // course content version at time of completion
     };
   });
 }
@@ -401,6 +408,7 @@ async function submitQuizToSP(token, employee, course, score, passed, answersJso
     Score: score,
     CompStatus: passed ? "Passed" : "Failed",
     Answers: answersJson,
+    CompletedVersion: course.version || 1, // stamp the content version they completed
   };
   if (certExpires) fields.CertExpires = certExpires;
   const result = await spCreate(token, CONFIG.lists.completions, fields);
@@ -412,6 +420,7 @@ async function submitQuizToSP(token, employee, course, score, passed, answersJso
     score,
     status: passed ? "passed" : "failed",
     certExpires: certExpires ? certExpires.split("T")[0] : null,
+    completedVersion: course.version || 1,
   };
 }
 
@@ -1340,8 +1349,17 @@ function daysBetween(d1, d2) {
   return Math.round((new Date(d2) - new Date(d1)) / (1000 * 60 * 60 * 24));
 }
 
+// True when a passed completion was earned on an older content version than the course now
+// requires — i.e. the course was updated with "requires re-training" since they completed it.
+function isVersionStale(completion, course) {
+  if (!completion || completion.status !== "passed" || !course) return false;
+  return (completion.completedVersion || 1) < (course.reqVersion || 1);
+}
+
 function getCertStatus(completion, course) {
   if (!completion || completion.status !== "passed") return "incomplete";
+  // Content-version gate: a required re-training update makes the old completion stale (must retake).
+  if (isVersionStale(completion, course)) return "expired";
   if (!course.recertDays && !completion.certExpires) return "current";
   const expiry = completion.certExpires;
   if (!expiry) return "current";
@@ -1907,6 +1925,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
   const myCompletions = completions.filter(c => c.employeeId === user.id);
   const myAssignments = (assignments || []).filter(a => a.employeeId === user.id && a.status === "Assigned");
   const [collapsedPaths, setCollapsedPaths] = useState([]);
+  const [showCompleted, setShowCompleted] = useState(false); // Completed (non-recert) section collapsed by default
 
   // Sub-views
   if (view?.type === "course") return <CourseView courseId={view.courseId} user={user} completions={completions} setCompletions={setCompletions} onQuizSubmit={onQuizSubmit} onBack={() => setView(null)} mobile={mobile} />;
@@ -1936,6 +1955,23 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
   const pathProgressList = paths.map(p => getPathProgress(p.id, user.id, completions, courses, learningPaths, user.role));
   const totalRequired = pathProgressList.reduce((sum, p) => sum + p.total, 0);
   const totalCompleted = pathProgressList.reduce((sum, p) => sum + p.completed, 0);
+
+  // Completed, non-recert courses across the user's paths — pulled out of the path lists into a
+  // collapsed "Completed Courses" section at the bottom. (Recert courses have their own section.)
+  const completedIds = new Set();
+  const completedCourseList = [];
+  paths.forEach(path => {
+    path.courseIds.forEach(cid => {
+      if (completedIds.has(cid)) return;
+      const course = courses.find(c => c.id === cid);
+      if (!course || course.recertDays || !courseMatchesRole(course, user.role)) return;
+      const latest = myCompletions.filter(c => c.courseId === cid && c.status === "passed").sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
+      if (latest && getCertStatus(latest, course) === "current") {
+        completedIds.add(cid);
+        completedCourseList.push({ course, latest });
+      }
+    });
+  });
 
   return (
     <div>
@@ -2127,7 +2163,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
             </div>
             {!isCollapsed && (
               <div style={{ marginTop: 12, marginLeft: 24 }}>
-                {path.courseIds.filter(cid => { const c = courses.find(x => x.id === cid); return c && courseMatchesRole(c, user.role); }).map(cid => {
+                {path.courseIds.filter(cid => { const c = courses.find(x => x.id === cid); return c && courseMatchesRole(c, user.role) && !completedIds.has(cid); }).map(cid => {
                 const course = courses.find(c => c.id === cid);
                 if (!course) return null;
                 const latest = myCompletions.filter(c => c.courseId === cid && c.status === "passed").sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
@@ -2318,6 +2354,49 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
           </div>
         );
       })()}
+
+      {/* ── Completed Courses (non-recert) — collapsed by default ── */}
+      {completedCourseList.length > 0 && (
+        <div style={S.card}>
+          <div
+            onClick={() => setShowCompleted(v => !v)}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", flexWrap: "wrap", gap: 8 }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ color: C.gray400, transition: "transform 0.2s", transform: showCompleted ? "rotate(90deg)" : "rotate(0deg)" }}><Icons.ChevronRight /></span>
+              <span style={{ fontSize: 17, fontWeight: 600, color: C.teal700, display: "flex", alignItems: "center", gap: 8 }}><Icons.Check /> Completed Courses</span>
+            </div>
+            <span style={S.badge("success")}>{completedCourseList.length} Complete</span>
+          </div>
+          {showCompleted && (
+            <div style={{ marginTop: 12, marginLeft: 24 }}>
+              {completedCourseList.map(({ course, latest }) => (
+                <div
+                  key={course.id}
+                  onClick={() => setView({ type: "course", courseId: course.id })}
+                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderBottom: `1px solid ${C.gray100}`, cursor: "pointer", borderRadius: 4, transition: "background 0.15s" }}
+                  onMouseEnter={e => e.currentTarget.style.background = C.teal50}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ color: C.success }}><Icons.Check /></span>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{courseFmt(course)}</div>
+                      <div style={{ fontSize: 12, color: C.gray400 }}>Completed {latest.completedDate} · Score: {latest.score}%</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <button onClick={(e) => { e.stopPropagation(); printCertificate(user.name, course.name, course.code, latest.score, latest.completedDate, latest.certExpires, course.recertDays); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 8px", fontSize: 11, color: C.gold700, borderColor: C.gold500, display: "inline-flex", alignItems: "center", gap: 4 }} title="View Certificate">
+                      <Icons.Award /> Cert
+                    </button>
+                    <Icons.ChevronRight />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2377,18 +2456,25 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
               {course.recertDays && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Icons.RefreshCw /> Recertification: every {course.recertDays} days</span>}
             </div>
           </div>
-          {bestPass && (
-            <div style={{ textAlign: "right" }}>
-              <span style={S.badge(getCertStatus(bestPass, course) === "expired" ? "error" : "success")}>
-                {getCertStatus(bestPass, course) === "expired" ? "EXPIRED" : `PASSED — ${bestPass.score}%`}
-              </span>
-              {bestPass.certExpires && (
-                <div style={{ fontSize: 12, color: C.gray400, marginTop: 4 }}>
-                  {getCertStatus(bestPass, course) === "expired" ? "Expired" : "Expires"}: {bestPass.certExpires}
-                </div>
-              )}
-            </div>
-          )}
+          {bestPass && (() => {
+            const stale = isVersionStale(bestPass, course);
+            const expired = getCertStatus(bestPass, course) === "expired";
+            return (
+              <div style={{ textAlign: "right" }}>
+                <span style={S.badge(expired ? "error" : "success")}>
+                  {stale ? "UPDATED — RETRAIN" : expired ? "EXPIRED" : `PASSED — ${bestPass.score}%`}
+                </span>
+                {stale && course.versionNote && (
+                  <div style={{ fontSize: 12, color: C.gray400, marginTop: 4, maxWidth: 220 }}>What changed: {course.versionNote}</div>
+                )}
+                {!stale && bestPass.certExpires && (
+                  <div style={{ fontSize: 12, color: C.gray400, marginTop: 4 }}>
+                    {expired ? "Expired" : "Expires"}: {bestPass.certExpires}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </div>
 
@@ -3695,8 +3781,31 @@ function CourseForm({ item, onClose }) {
   const allRoles = [...new Set([...defaultRoles, ...employeeRoles, ...(item?.roles || [])])].sort();
   const [form, setForm] = useState({ name: item?.name || "", code: item?.code || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999, status: item?.status || "Active", roles: item?.roles || [] });
   const [saving, setSaving] = useState(false);
+  const [versionNote, setVersionNote] = useState("");
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
   const toggleCourseRole = (role) => { set("roles", form.roles.includes(role) ? form.roles.filter(r => r !== role) : [...form.roles, role]); };
+
+  // Publish a content update. `requireRetrain` = everyone who completed an earlier version must
+  // retake it (bumps reqVersion); otherwise it's a minor edit (version bumps, completions stay valid).
+  const publishUpdate = async (requireRetrain) => {
+    const newVersion = (item.version || 1) + 1;
+    const newReq = requireRetrain ? newVersion : (item.reqVersion || 1);
+    if (requireRetrain && !confirm(`Require re-training for "${item.name}"?\n\nEveryone who completed v${item.version || 1} will be marked as needing to retake it — the course shows as required/overdue for them again. New completions count as v${newVersion}.`)) return;
+    setSaving(true);
+    try {
+      if (isLive) {
+        const token = await getToken();
+        await spUpdate(token, CONFIG.lists.courses, item.id, { Version: newVersion, ReqVersion: newReq, VersionNote: versionNote.trim(), VersionDate: new Date().toISOString() });
+      }
+      const versionDate = new Date().toISOString().split("T")[0];
+      setCourses(prev => prev.map(c => c.id === item.id ? { ...c, version: newVersion, reqVersion: newReq, versionNote: versionNote.trim(), versionDate } : c));
+      alert(requireRetrain
+        ? `Published v${newVersion}. Everyone who completed an earlier version must now re-train.`
+        : `Saved v${newVersion} (minor edit). No re-training required.`);
+      onClose();
+    } catch (err) { alert("Publish failed: " + err.message); }
+    setSaving(false);
+  };
 
   // Send "Course Now Available" email to pre-registered and learning path employees
   const sendGoLiveNotifications = async (token, courseId, courseName) => {
@@ -3766,7 +3875,7 @@ function CourseForm({ item, onClose }) {
           // Fire go-live notifications if status changed from Coming Soon → Active
           if (goingLive) { sendGoLiveNotifications(token, item.id, fields.Title).catch(e => console.error("Go-live notifications failed:", e)); }
         }
-        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, activatedDate: needsActivatedDate ? new Date().toISOString().split("T")[0] : null }].sort((a,b) => a.sortOrder - b.sortOrder)); }
+        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, activatedDate: needsActivatedDate ? new Date().toISOString().split("T")[0] : null, version: 1, reqVersion: 1 }].sort((a,b) => a.sortOrder - b.sortOrder)); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
@@ -3810,6 +3919,22 @@ function CourseForm({ item, onClose }) {
           ))}
         </div>
       </FormField>
+      {isEdit && (
+        <FormField label="Content Version" hint="After you edit this course's lessons or quiz, publish the change here so completions stay accurate.">
+          <div style={{ background: C.teal50, border: `1px solid ${C.gray100}`, borderRadius: 8, padding: 12 }}>
+            <div style={{ fontSize: 13, color: C.gray400, marginBottom: 8 }}>
+              Current version: <strong style={{ color: C.teal700 }}>v{item.version || 1}</strong>
+              {(item.reqVersion || 1) > 1 && <span> &middot; re-training required at v{item.reqVersion}</span>}
+              {item.versionDate && <span> &middot; last published {item.versionDate}</span>}
+            </div>
+            <input style={{ ...S.input, marginBottom: 8 }} value={versionNote} onChange={e => setVersionNote(e.target.value)} placeholder="What changed? (e.g. Updated how SODAs are processed) — shown to staff who must re-train" />
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button style={{ ...S.btnSecondary, ...S.btnSmall }} onClick={() => publishUpdate(false)} disabled={saving}>Save Minor Edit (no re-training)</button>
+              <button style={{ ...S.btnPrimary, ...S.btnSmall }} onClick={() => publishUpdate(true)} disabled={saving}>Publish Update &mdash; Require Re-training</button>
+            </div>
+          </div>
+        </FormField>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, paddingTop: 16, borderTop: `1px solid ${C.gray100}` }}>
         <div style={{ display: "flex", gap: 8 }}>
           {isEdit && <button style={{ ...S.btnSecondary, ...S.btnSmall, color: "#C44B3B", borderColor: "#C44B3B" }} onClick={handleDelete} disabled={saving}>Permanently Delete</button>}
@@ -4196,6 +4321,7 @@ function SOPImporter() {
         RecertDays: recert, PassingScore: parseInt(c.passingScore, 10) || CONFIG.passingScore,
         SortOrder: parseInt(c.sortOrder, 10) || 999, CourseActive: opts.status !== "Archived", CourseStatus: opts.status,
         CourseRoles: opts.roles.join(","), ActivatedDate: new Date().toISOString(),
+        Version: 1, ReqVersion: 1,
       };
       let courseId;
       if (isLive) { const res = await spCreate(token, CONFIG.lists.courses, courseFields); courseId = String(res.id); }
@@ -4205,7 +4331,7 @@ function SOPImporter() {
         id: courseId, name: courseFields.Title, code: courseFields.CourseCode, description: courseFields.CourseDescription,
         category: courseFields.Category, durationMin: courseFields.DurationMin, recertDays: recert || null,
         passingScore: courseFields.PassingScore, sortOrder: courseFields.SortOrder, status: courseFields.CourseStatus,
-        roles: opts.roles, activatedDate: new Date().toISOString().split("T")[0],
+        roles: opts.roles, activatedDate: new Date().toISOString().split("T")[0], version: 1, reqVersion: 1,
       }].sort((a, b) => a.sortOrder - b.sortOrder));
 
       // Lessons
