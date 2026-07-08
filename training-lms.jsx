@@ -1,3 +1,4 @@
+(function(){try{var V="ns-tenant-2026-07";if(localStorage.getItem("ns_cache_ver")!==V){[localStorage,sessionStorage].forEach(function(s){try{Object.keys(s).forEach(function(k){var lk=k.toLowerCase();if(lk.indexOf("msal")>-1||lk.indexOf("login.windows")>-1||lk.indexOf("32e75ffa")>-1)s.removeItem(k)})}catch(e){}});localStorage.setItem("ns_cache_ver",V)}}catch(e){}})();
 const { useState, useEffect, useCallback, useRef, useMemo, createContext, useContext } = React;
 
 // Favicon — gold box with teal "U" for University
