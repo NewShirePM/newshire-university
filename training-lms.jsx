@@ -1390,17 +1390,17 @@ function getPathProgress(pathId, employeeId, completions, courses, learningPaths
   return { total, completed, pct: total > 0 ? Math.round((completed / total) * 100) : 100 };
 }
 
-// Roles exempt from required training deadlines (can still take courses voluntarily)
-const EXEMPT_ROLES = ["Owner/Operator"];
+// Roles exempt from required training deadlines (can still take courses voluntarily).
+// Matches any role containing "Owner" (e.g. "Owner/Operator", "Owner", "Co-Owner") since JobTitle
+// is free text — an exact-string list would silently miss anyone not typed identically.
+function isTrainingExempt(employee) {
+  return (employee.role || "").toLowerCase().includes("owner");
+}
 
 function getEmployeePaths(employee, learningPaths) {
   return learningPaths.filter(p =>
     p.roles.includes("All") || p.roles.includes(employee.role)
   );
-}
-
-function isTrainingExempt(employee) {
-  return EXEMPT_ROLES.includes(employee.role);
 }
 
 // Course-level role filtering: empty roles = all roles, populated = only matching roles
@@ -2918,8 +2918,11 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
     // count — otherwise a deleted/Coming-Soon course still lingering in a path's CourseIDs inflates
     // the total and drags compliance below 100% for fully-compliant employees.
     const applicableCount = courseStatuses.length;
-    const compliancePct = applicableCount > 0 ? Math.round((completed / applicableCount) * 100) : 100;
-    const overallStatus = expired > 0 || overduePaths.length > 0 ? "non-compliant" : missing > 0 ? "in-progress" : expiring > 0 || dueSoonPaths.length > 0 ? "expiring" : "compliant";
+    // applicableCount === 0 means this employee has no Active required courses right now (e.g. a
+    // course purge left their path pointing at deleted/Coming-Soon courses) — that's "nothing to
+    // measure", not "fully compliant", so it must not fall back to 100%.
+    const compliancePct = applicableCount > 0 ? Math.round((completed / applicableCount) * 100) : null;
+    const overallStatus = applicableCount === 0 ? "no-requirements" : expired > 0 || overduePaths.length > 0 ? "non-compliant" : missing > 0 ? "in-progress" : expiring > 0 || dueSoonPaths.length > 0 ? "expiring" : "compliant";
 
     // Find who this person reports to for context (reportsTo can be ID or email)
     const manager = employees.find(e => e.id === emp.reportsTo || e.email === emp.reportsTo);
@@ -2933,6 +2936,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
     if (filterStatus === "Non-Compliant" && m.overallStatus !== "non-compliant") return false;
     if (filterStatus === "In Progress" && m.overallStatus !== "in-progress") return false;
     if (filterStatus === "Expiring" && m.overallStatus !== "expiring") return false;
+    if (filterStatus === "No Requirements" && m.overallStatus !== "no-requirements") return false;
     return true;
   });
 
@@ -2940,10 +2944,12 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
   const compliant = matrix.filter(m => m.overallStatus === "compliant").length;
   const nonCompliant = matrix.filter(m => m.overallStatus === "non-compliant").length;
   const expiringSoon = matrix.filter(m => m.overallStatus === "expiring").length;
+  const noRequirements = matrix.filter(m => m.overallStatus === "no-requirements").length;
+  const applicableEmployees = totalEmployees - noRequirements;
 
   const statusBadge = (status) => {
-    const map = { "compliant": "success", "non-compliant": "error", "in-progress": "warning", "expiring": "info" };
-    const labels = { "compliant": "COMPLIANT", "non-compliant": "NON-COMPLIANT", "in-progress": "IN PROGRESS", "expiring": "EXPIRING SOON" };
+    const map = { "compliant": "success", "non-compliant": "error", "in-progress": "warning", "expiring": "info", "no-requirements": "neutral" };
+    const labels = { "compliant": "COMPLIANT", "non-compliant": "NON-COMPLIANT", "in-progress": "IN PROGRESS", "expiring": "EXPIRING SOON", "no-requirements": "NO REQUIREMENTS" };
     return <span style={S.badge(map[status])}>{labels[status]}</span>;
   };
 
@@ -3034,6 +3040,10 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
           <div style={S.kpiLabel}>Expiring Soon</div>
           <div style={{ ...S.kpiValue, color: expiringSoon > 0 ? C.warning : C.success }}>{expiringSoon}</div>
         </div>
+        <div style={S.kpiCard}>
+          <div style={S.kpiLabel}>No Requirements</div>
+          <div style={{ ...S.kpiValue, color: noRequirements > 0 ? C.gray400 : C.success }}>{noRequirements}</div>
+        </div>
       </div>
 
       {/* Compliance Rate */}
@@ -3042,11 +3052,16 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
           <div style={{ fontSize: 16, fontWeight: 600, color: C.teal700 }}>
             {isAdmin ? "Organization Compliance Rate" : "Team Compliance Rate"}
           </div>
-          <span style={{ fontSize: 24, fontWeight: 700, fontFamily: mono, color: compliant === totalEmployees ? C.success : C.warning }}>
-            {totalEmployees > 0 ? Math.round((compliant / totalEmployees) * 100) : 0}%
+          <span style={{ fontSize: 24, fontWeight: 700, fontFamily: mono, color: compliant === applicableEmployees ? C.success : C.warning }}>
+            {applicableEmployees > 0 ? Math.round((compliant / applicableEmployees) * 100) : 0}%
           </span>
         </div>
-        <ProgressBar pct={totalEmployees > 0 ? Math.round((compliant / totalEmployees) * 100) : 0} />
+        <ProgressBar pct={applicableEmployees > 0 ? Math.round((compliant / applicableEmployees) * 100) : 0} />
+        {noRequirements > 0 && (
+          <div style={{ fontSize: 12, color: C.gray400, marginTop: 8 }}>
+            Excludes {noRequirements} employee{noRequirements > 1 ? "s" : ""} with no active required courses assigned yet.
+          </div>
+        )}
         {isAdmin && (
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.gray100}` }}>
             <button onClick={sendComplianceReminders} disabled={sending} style={{ ...S.btnPrimary, ...S.btnSmall, opacity: sending ? 0.6 : 1 }}>
@@ -3075,7 +3090,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
             <div>
               <label style={{ ...S.label, fontSize: 12 }}>Status</label>
               <select style={{ ...S.select, width: "auto", minWidth: 160 }} value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
-                {["All", "Compliant", "Non-Compliant", "In Progress", "Expiring"].map(s => <option key={s} value={s}>{s}</option>)}
+                {["All", "Compliant", "Non-Compliant", "In Progress", "Expiring", "No Requirements"].map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
           </div>
@@ -3105,8 +3120,14 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
                 <div style={{ width: 120 }}>
-                  <ProgressBar pct={m.compliancePct} height={6} label={false} />
-                  <div style={{ fontSize: 11, color: C.gray400, marginTop: 2, textAlign: "center" }}>{m.compliancePct}% complete</div>
+                  {m.overallStatus === "no-requirements" ? (
+                    <div style={{ fontSize: 11, color: C.gray400, textAlign: "center" }}>No active required courses</div>
+                  ) : (
+                    <>
+                      <ProgressBar pct={m.compliancePct} height={6} label={false} />
+                      <div style={{ fontSize: 11, color: C.gray400, marginTop: 2, textAlign: "center" }}>{m.compliancePct}% complete</div>
+                    </>
+                  )}
                 </div>
                 {statusBadge(m.overallStatus)}
                 <span style={{ color: C.gray300, transform: expandedEmp === m.emp.id ? "rotate(90deg)" : "rotate(0)", transition: "transform 0.2s" }}>
