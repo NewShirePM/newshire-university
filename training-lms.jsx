@@ -4409,7 +4409,11 @@ function SOPImporter() {
         const path = learningPaths.find(p => p.id === opts.existingPathId);
         if (!path) { addLog("⚠ Selected learning path not found — skipped."); }
         else {
-          const newCourseIds = [...path.courseIds, String(courseId)];
+          // Drop any IDs that no longer resolve to a live course before re-appending — path.courseIds
+          // here reflects whatever was last loaded into state, so if it's ever stale (e.g. a course
+          // was deleted in another tab/session since this page loaded) this write must not resurrect it.
+          const liveCourseIds = path.courseIds.filter(cid => courses.some(c => c.id === cid) || cid === String(courseId));
+          const newCourseIds = [...new Set([...liveCourseIds, String(courseId)])];
           if (isLive) await spUpdate(token, CONFIG.lists.paths, path.id, { CourseIDs: newCourseIds.join(",") });
           setLearningPaths(prev => prev.map(p => p.id === path.id ? { ...p, courseIds: newCourseIds } : p));
           addLog(`✓ Added to learning path: ${path.name}${path.required ? " — required" : " — optional"}`);
