@@ -3980,7 +3980,10 @@ function PathForm({ item, onClose }) {
   const existingPathRoles = item?.roles || [];
   const allRoles = [...new Set([...defaultRoles, ...employeeRoles, ...existingPathRoles])].sort((a,b) => a === "All" ? -1 : b === "All" ? 1 : a.localeCompare(b));
   const [customRole, setCustomRole] = useState("");
-  const [form, setForm] = useState({ name: item?.name||"", description: item?.description||"", roles: item?.roles||["All"], courseIds: item?.courseIds||[], required: item?.required!==false, dueDays: item?.dueDays||"" });
+  // Drop any courseIds that no longer resolve to an existing course (e.g. deleted outside the
+  // in-app delete flow, which normally strips the path reference) — the picker below can't
+  // display or uncheck them, so leaving them in would just re-save the stale IDs on every edit.
+  const [form, setForm] = useState({ name: item?.name||"", description: item?.description||"", roles: item?.roles||["All"], courseIds: (item?.courseIds||[]).filter(cid => courses.some(c => c.id === cid)), required: item?.required!==false, dueDays: item?.dueDays||"" });
   const [saving, setSaving] = useState(false);
   const [roleList, setRoleList] = useState(allRoles);
   const set = (k,v) => setForm(p => ({...p,[k]:v}));
@@ -4701,7 +4704,7 @@ function ManageView({ mobile }) {
                     {path.dueDays && <span style={S.badge("info")}>Due within {path.dueDays}d of hire</span>}
                   </div>
                   <div style={{ fontSize: 12, color: C.gray400, marginTop: 6 }}>
-                    Courses: {path.courseIds.map(cid => courses.find(c => c.id === cid)?.name || cid).join(" \u2192 ")}
+                    Courses: {path.courseIds.map(cid => courses.find(c => c.id === cid)?.name || "\u26a0 removed course (open Edit to clean up)").join(" \u2192 ")}
                   </div>
                 </div>
                 <button style={{ ...S.btnSecondary, ...S.btnSmall }} onClick={() => setModal({ type: "path", item: path })}>Edit</button>
