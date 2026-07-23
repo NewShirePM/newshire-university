@@ -4000,7 +4000,7 @@ function PathForm({ item, onClose }) {
   const toggleCourse = (cid) => { set("courseIds", form.courseIds.includes(cid)?form.courseIds.filter(c=>c!==cid):[...form.courseIds,cid]); };
   const handleSave = async () => {
     if (!form.name.trim()) return alert("Path name is required.");
-    if (form.courseIds.length===0) return alert("Select at least one course.");
+    if (form.courseIds.length===0 && !confirm("This path has no courses selected — save it empty anyway? (Useful for clearing out stale/removed courses before new ones are attached.)")) return;
     setSaving(true);
     const fields = { Title: form.name.trim(), PathDescription: form.description, Roles: form.roles.join(","), CourseIDs: form.courseIds.join(","), Required: form.required, DueDays: parseInt(form.dueDays,10)||0, PathActive: true };
     try {
