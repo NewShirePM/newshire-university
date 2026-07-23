@@ -186,6 +186,50 @@ async function spUpdate(token, listName, itemId, fields) {
   return res.json();
 }
 
+// Upload a video file into a "Training Videos" folder on the site's default document library,
+// via a chunked resumable session (Graph's simple PUT only allows files up to 4MB). Returns the
+// file's permanent webUrl, which — since it ends in the original extension — is picked up
+// automatically by the lesson video player's .mp4/.webm/.ogg direct-file handling.
+const UPLOAD_CHUNK_SIZE = 10 * 1024 * 1024; // 10MB — must be a multiple of 320 KiB per Graph's requirement
+async function ensureVideoFolder(token) {
+  const res = await fetch(`${SITE_URL}/drive/root/children`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "Training Videos", folder: {}, "@microsoft.graph.conflictBehavior": "fail" }),
+  });
+  if (!res.ok && res.status !== 409) throw new Error(`Could not prepare video folder (${res.status})`);
+}
+async function uploadLessonVideo(token, file, onProgress) {
+  await ensureVideoFolder(token);
+  const safeName = file.name.replace(/[~"#%&*:<>?/\\{|}]/g, "-");
+  const path = `Training Videos/${Date.now()}-${safeName}`;
+  const sessionRes = await fetch(`${SITE_URL}/drive/root:/${encodeURIComponent(path).replace(/%2F/g, "/")}:/createUploadSession`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": "rename" } }),
+  });
+  if (!sessionRes.ok) throw new Error(`Could not start upload (${sessionRes.status})`);
+  const { uploadUrl } = await sessionRes.json();
+
+  let start = 0;
+  let lastItem = null;
+  while (start < file.size) {
+    const end = Math.min(start + UPLOAD_CHUNK_SIZE, file.size);
+    const chunk = file.slice(start, end);
+    const chunkRes = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Range": `bytes ${start}-${end - 1}/${file.size}` },
+      body: chunk,
+    });
+    if (!chunkRes.ok) throw new Error(`Upload chunk failed (${chunkRes.status})`);
+    start = end;
+    onProgress?.(Math.round((start / file.size) * 100));
+    if (chunkRes.status === 200 || chunkRes.status === 201) lastItem = await chunkRes.json();
+  }
+  if (!lastItem?.webUrl) throw new Error("Upload finished but no file URL was returned.");
+  return lastItem.webUrl;
+}
+
 // ============================================================
 // DATA NORMALIZATION — SharePoint fields → app shape
 // ============================================================
@@ -4067,6 +4111,24 @@ function LessonForm({ item, courseId, onClose }) {
   };
   const [form, setForm] = useState({ title: item?.title||"", courseId: item?.courseId||courseId||"", order: item?.order||(lessons.filter(l=>l.courseId===(item?.courseId||courseId)).length+1), durationMin: item?.durationMin||10, body: item?.body||"", videoUrl: item?.videoUrl||"", documentUrl: item?.documentUrl||"", documentTitle: item?.documentTitle||"" });
   const [supplements, setSupplements] = useState(initSupplements);
+  const [videoUploadPct, setVideoUploadPct] = useState(null); // null = not uploading, 0-100 = progress
+  const videoFileInputRef = useRef(null);
+  const handleVideoFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+    if (!isLive) return alert("Video upload requires a live SharePoint connection.");
+    if (file.size > 2 * 1024 * 1024 * 1024) return alert("That file is over 2GB — please compress it or host it elsewhere and paste the link instead.");
+    setVideoUploadPct(0);
+    try {
+      const token = await getToken();
+      const url = await uploadLessonVideo(token, file, setVideoUploadPct);
+      set("videoUrl", url);
+    } catch (err) {
+      alert("Video upload failed: " + err.message);
+    }
+    setVideoUploadPct(null);
+  };
   const [saving, setSaving] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
   const bodyRef = useRef(null);
@@ -4149,7 +4211,16 @@ function LessonForm({ item, courseId, onClose }) {
           </div>
         )}
       </FormField>
-      <FormField label="Video URL" hint="Optional — YouTube, Vimeo, SharePoint Stream, or direct video link"><input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." /></FormField>
+      <FormField label="Video URL" hint="Optional — upload a video file, or paste a YouTube, Vimeo, SharePoint Stream, or direct video link">
+        <input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." />
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
+          <input ref={videoFileInputRef} type="file" accept="video/*" style={{ display: "none" }} onChange={handleVideoFileChange} />
+          <button type="button" style={{ ...S.btnSecondary, ...S.btnSmall }} onClick={() => videoFileInputRef.current?.click()} disabled={videoUploadPct !== null}>
+            {videoUploadPct !== null ? `Uploading… ${videoUploadPct}%` : "⬆ Upload Video File"}
+          </button>
+          {videoUploadPct !== null && <span style={{ fontSize: 12, color: C.gray400 }}>Don't close this window until the upload finishes.</span>}
+        </div>
+      </FormField>
       <FormField label="Presentation URL" hint="Paste the SharePoint embed code or URL — iframe tags and formatting are cleaned automatically"><input style={S.input} value={form.documentUrl} onChange={e => {
         let v = e.target.value;
         const srcMatch = v.match(/src=["']([^"']+)["']/);
