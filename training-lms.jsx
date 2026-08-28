@@ -22,6 +22,7 @@ const CONFIG = {
     assignments:  "TrainingAssignments",
     config:       "AppConfig",
     notifications: "NotificationLog",
+    jobRoles:     "NS_JobRoles",   // shared — canonical job titles, owned/seeded by Employee Lifecycle
   },
   appName: "NEWSHIRE UNIVERSITY",
   // Set false to run in demo mode with hardcoded data (no SharePoint connection)
@@ -233,6 +234,47 @@ async function uploadLessonVideo(token, file, onProgress) {
 // ============================================================
 // DATA NORMALIZATION — SharePoint fields → app shape
 // ============================================================
+// ============================================================
+// CANONICAL JOB ROLES
+// ============================================================
+// Source of truth is the shared NS_JobRoles list, seeded by
+// employee-lifecycle/scripts/provision-job-roles.ps1. Course and path
+// targeting below matches these strings EXACTLY against Employees.JobTitle,
+// so both apps must offer the same options or targeting silently misses
+// people. This array is only the fallback for when the list is unreachable —
+// keep it in step with DEFAULT_JOB_ROLES in employee-lifecycle.jsx.
+const DEFAULT_JOB_ROLES = [
+  "Owner",
+  "Director of Operations",
+  "Regional/Portfolio Manager",
+  "Operations Manager",
+  "Property Manager",
+  "Delinquency and Collections Manager",
+  "Executive Assistant",
+  "Maintenance Supervisor",
+  "Maintenance Technician",
+  "Leasing Agent",
+  "1099 Leasing",
+  "Virtual Assistant",
+];
+
+function normalizeJobRoles(items) {
+  const list = (items || [])
+    .map(i => ({ title: (i.fields?.Title || "").trim(), sort: Number(i.fields?.SortOrder || 0), active: i.fields?.RoleActive !== false }))
+    .filter(r => r.title && r.active)
+    .sort((a, b) => (a.sort || 0) - (b.sort || 0) || a.title.localeCompare(b.title))
+    .map(r => r.title);
+  return list.length ? list : DEFAULT_JOB_ROLES;
+}
+
+// Compare app access level case-insensitively. Three call sites used to test
+// for lowercase "admin" against a stored "Admin", so they never matched — which
+// silently disabled the cert-expiration and assignment scans and narrowed admin
+// notification emails to the CONFIG.adminEmail fallback.
+function isAppAdmin(person) {
+  return String(person?.appRole || "").trim().toLowerCase() === "admin";
+}
+
 function normalizeEmployees(items) {
   return items.map(item => {
     const f = item.fields;
@@ -241,7 +283,11 @@ function normalizeEmployees(items) {
       name: f.Title || "",
       email: (f.Email || "").toLowerCase(),
       role: f.JobTitle || "",
-      appRole: f.AccessLevel || "Employee",
+      // Employee Lifecycle's App Permissions matrix is the system of record and
+      // writes UniversityRole. AccessLevel is the legacy column this app used to
+      // own — kept as a fallback because UniversityRole is blank for most people
+      // and dropping it outright would revoke every admin.
+      appRole: f.UniversityRole || f.AccessLevel || "Employee",
       reportsTo: (f.ManagerEmail || "").toLowerCase(),
       hireDate: f.StartDate ? f.StartDate.split("T")[0] : null,
       active: f.EmployeeActive !== false,
@@ -414,11 +460,13 @@ function normalizeAssignments(items, employeesByEmail) {
 // ============================================================
 async function loadAllData(token) {
   const L = CONFIG.lists;
-  const [usersRaw, coursesRaw, pathsRaw, lessonsRaw, quizzesRaw, completionsRaw, enrollmentsRaw, assignmentsRaw, configRaw] =
+  const [usersRaw, coursesRaw, pathsRaw, lessonsRaw, quizzesRaw, completionsRaw, enrollmentsRaw, assignmentsRaw, configRaw, jobRolesRaw] =
     await Promise.all([
       spGet(token, L.users), spGet(token, L.courses), spGet(token, L.paths),
       spGet(token, L.lessons), spGet(token, L.quizzes), spGet(token, L.completions),
       spGet(token, L.enrollments), spGet(token, L.assignments).catch(() => []), spGet(token, L.config),
+      // Shared with Employee Lifecycle. Tolerate absence — falls back to DEFAULT_JOB_ROLES.
+      spGet(token, L.jobRoles).catch(() => []),
     ]);
   const employees = normalizeEmployees(usersRaw);
   const employeesByEmail = {};
@@ -436,7 +484,7 @@ async function loadAllData(token) {
     if (f.Title === "DefaultPassingScore" && f.Value) CONFIG.passingScore = parseInt(f.Value, 10) || 80;
     if (f.Title === "EmailsPaused") EMAIL_PAUSED = f.Value === "true";
   }
-  return { employees, employeesByEmail, courses, paths, lessons, quizzes, completions, enrollments, assignments };
+  return { employees, employeesByEmail, courses, paths, lessons, quizzes, completions, enrollments, assignments, jobRoles: normalizeJobRoles(jobRolesRaw) };
 }
 
 // ============================================================
@@ -1293,7 +1341,7 @@ function getSubordinateIds(employeeId, employees) {
 }
 
 function getUserAccess(employee, employees) {
-  const isAdmin = employee.appRole === "Admin";
+  const isAdmin = isAppAdmin(employee);
   const subordinateIds = getSubordinateIds(employee.id, employees);
   const isManager = subordinateIds.length > 0;
   return { isAdmin, isManager, subordinateIds };
@@ -1580,6 +1628,8 @@ function App() {
   const [completions, setCompletions] = useState([]);
   const [enrollments, setEnrollments] = useState([]);
   const [assignments, setAssignments] = useState([]);
+  // Canonical job titles, shared with Employee Lifecycle via NS_JobRoles.
+  const [jobRoles, setJobRoles] = useState(DEFAULT_JOB_ROLES);
   const [currentUser, setCurrentUser] = useState(null);
   const [viewAsId, setViewAsId] = useState(null); // admin "view as employee" — id of the impersonated employee
 
@@ -1617,6 +1667,7 @@ function App() {
         setCompletions(data.completions);
         setEnrollments(data.enrollments);
         setAssignments(data.assignments || []);
+        setJobRoles(data.jobRoles || DEFAULT_JOB_ROLES);
         // Match logged-in user by email
         const email = account.username.toLowerCase();
         const user = data.employees.find(e => e.email === email);
@@ -1671,14 +1722,14 @@ function App() {
   // deduplication key could be written. PA scheduled flow is the single source of truth.
   useEffect(() => {
     if (!isLive || !currentUser) return;
-    const isAdmin = currentUser.appRole === "admin";
+    const isAdmin = isAppAdmin(currentUser);
     (async () => {
       try {
         const token = await getToken();
         if (!token) return;
         // Cert expiration scanner runs for admins only
         if (isAdmin) {
-          const adminEmails = employees.filter(e => e.active && e.appRole === "admin").map(e => e.email);
+          const adminEmails = employees.filter(e => e.active && isAppAdmin(e)).map(e => e.email);
           const certsSent = await runCertExpirationScan(token, employees, completions, courses, adminEmails.length > 0 ? adminEmails : [CONFIG.adminEmail]);
           const assignResult = await runAssignmentScan(token, employees, learningPaths, courses);
           const msgs = [];
@@ -1782,7 +1833,7 @@ function App() {
         const comp = await submitQuizToSP(token, employee, course, score, passed, answersJson);
         setCompletions(prev => [...prev, comp]);
         // Fire notification emails (non-blocking — don't let email failure break the quiz flow)
-        const admins = employees.filter(e => e.active && e.appRole === "admin").map(e => e.email);
+        const admins = employees.filter(e => e.active && isAppAdmin(e)).map(e => e.email);
         sendQuizResultEmail(token, employee, course, score, passed, admins.length > 0 ? admins : [CONFIG.adminEmail]).catch(e => console.error("Quiz email failed:", e));
         // Auto-complete any matching assignments for this employee + course
         if (passed) {
@@ -1864,7 +1915,7 @@ function App() {
   const enterViewAs = (id) => { setViewAsId(id || null); setTab(0); setView(null); };
 
   // ── Context value ──
-  const ctx = { employees, setEmployees, courses, setCourses, learningPaths, setLearningPaths, lessons, setLessons, quizzes, setQuizzes, completions, enrollments, isLive, getToken: getToken };
+  const ctx = { employees, setEmployees, courses, setCourses, learningPaths, setLearningPaths, lessons, setLessons, quizzes, setQuizzes, completions, enrollments, isLive, getToken: getToken, jobRoles };
 
   return (
     <DataContext.Provider value={ctx}>
@@ -3778,21 +3829,26 @@ function SaveBar({ saving, onSave, onCancel, onDelete, deleteLabel }) {
 
 // ── EMPLOYEE FORM ──
 function EmployeeForm({ item, onClose }) {
-  const { employees, setEmployees, isLive, getToken } = useData();
+  const { employees, setEmployees, isLive, getToken, jobRoles } = useData();
   const isEdit = !!item;
-  const [form, setForm] = useState({ name: item?.name || "", email: item?.email || "", role: item?.role || "Property Manager", appRole: item?.appRole || "Employee", reportsTo: item?.reportsTo || "", hireDate: item?.hireDate || new Date().toISOString().split("T")[0], active: item?.active !== false });
+  const [form, setForm] = useState({ name: item?.name || "", email: item?.email || "", role: item?.role || "", appRole: item?.appRole || "Employee", reportsTo: item?.reportsTo || "", hireDate: item?.hireDate || new Date().toISOString().split("T")[0], active: item?.active !== false });
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
-  const roles = [...new Set(employees.map(e => e.role).filter(Boolean))].sort();
+  // Canonical titles, plus this person's current one if it has fallen off the
+  // list, so opening the form never silently rewrites their title.
+  const roles = jobRoles.includes(item?.role) || !item?.role ? jobRoles : [...jobRoles, item.role];
   const handleSave = async () => {
     if (!form.name.trim() || !form.email.trim()) return alert("Name and email are required.");
     setSaving(true);
-    const fields = { Title: form.name.trim(), Email: form.email.trim().toLowerCase(), JobTitle: form.role, AccessLevel: form.appRole, ManagerEmail: form.reportsTo, StartDate: form.hireDate, EmployeeActive: form.active };
+    // Write UniversityRole, the column Employee Lifecycle's App Permissions
+    // matrix owns and this app now reads first. AccessLevel is left untouched
+    // so the read-time fallback still works for anyone not migrated yet.
+    const fields = { Title: form.name.trim(), Email: form.email.trim().toLowerCase(), JobTitle: form.role, UniversityRole: form.appRole, ManagerEmail: form.reportsTo, StartDate: form.hireDate, EmployeeActive: form.active };
     try {
       if (isLive) {
         const token = await getToken();
-        if (isEdit) { await spUpdate(token, CONFIG.lists.users, item.id, fields); setEmployees(prev => prev.map(e => e.id === item.id ? { ...e, name: fields.Title, email: fields.Email, role: fields.JobTitle, appRole: fields.AccessLevel, reportsTo: fields.ManagerEmail.toLowerCase(), hireDate: fields.StartDate, active: fields.EmployeeActive } : e)); }
-        else { const res = await spCreate(token, CONFIG.lists.users, fields); setEmployees(prev => [...prev, { id: String(res.id), name: fields.Title, email: fields.Email, role: fields.JobTitle, appRole: fields.AccessLevel, reportsTo: fields.ManagerEmail.toLowerCase(), hireDate: fields.StartDate, active: fields.EmployeeActive }]); }
+        if (isEdit) { await spUpdate(token, CONFIG.lists.users, item.id, fields); setEmployees(prev => prev.map(e => e.id === item.id ? { ...e, name: fields.Title, email: fields.Email, role: fields.JobTitle, appRole: fields.UniversityRole, reportsTo: fields.ManagerEmail.toLowerCase(), hireDate: fields.StartDate, active: fields.EmployeeActive } : e)); }
+        else { const res = await spCreate(token, CONFIG.lists.users, fields); setEmployees(prev => [...prev, { id: String(res.id), name: fields.Title, email: fields.Email, role: fields.JobTitle, appRole: fields.UniversityRole, reportsTo: fields.ManagerEmail.toLowerCase(), hireDate: fields.StartDate, active: fields.EmployeeActive }]); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
@@ -3815,8 +3871,8 @@ function EmployeeForm({ item, onClose }) {
     <Modal title={isEdit ? `Edit Employee \u2014 ${item.name}` : "Add Employee"} onClose={onClose}>
       <FormRow><FormField label="Full Name"><input style={S.input} value={form.name} onChange={e => set("name", e.target.value)} /></FormField><FormField label="Email"><input style={S.input} type="email" value={form.email} onChange={e => set("email", e.target.value)} /></FormField></FormRow>
       <FormRow>
-        <FormField label="Role"><input style={S.input} list="role-options" value={form.role} onChange={e => set("role", e.target.value)} placeholder="Type or select..." /><datalist id="role-options">{roles.map(r => <option key={r} value={r} />)}</datalist></FormField>
-        <FormField label="App Access Level"><select style={S.select} value={form.appRole} onChange={e => set("appRole", e.target.value)}><option value="Employee">Employee</option><option value="Admin">Admin</option></select></FormField>
+        <FormField label="Job Title" hint="Drives which courses and paths apply. Shared list with Employee Lifecycle."><select style={S.select} value={form.role} onChange={e => set("role", e.target.value)}><option value="">{"—"} Select {"—"}</option>{roles.map(r => <option key={r} value={r}>{r}</option>)}</select></FormField>
+        <FormField label="University Access" hint="Also settable in Employee Lifecycle → App Permissions."><select style={S.select} value={form.appRole} onChange={e => set("appRole", e.target.value)}><option value="Employee">Employee</option><option value="Manager">Manager</option><option value="Admin">Admin</option></select></FormField>
       </FormRow>
       <FormRow>
         <FormField label="Reports To"><select style={S.select} value={form.reportsTo} onChange={e => set("reportsTo", e.target.value)}><option value="">{"\u2014"} None (Top Level) {"\u2014"}</option>{employees.filter(e => e.active && e.id !== item?.id).map(e => <option key={e.id} value={e.email}>{e.name} ({e.role})</option>)}</select></FormField>
@@ -3838,13 +3894,14 @@ function EmployeeForm({ item, onClose }) {
 
 // ── COURSE FORM ──
 function CourseForm({ item, onClose }) {
-  const { employees, enrollments, learningPaths, setCourses, setLearningPaths, isLive, getToken } = useData();
+  const { employees, enrollments, learningPaths, setCourses, setLearningPaths, isLive, getToken, jobRoles } = useData();
   const isEdit = !!item;
   const wasComingSoon = isEdit && item.status === "Coming Soon";
   const categories = ["Onboarding", "Compliance", "Leasing", "Maintenance", "Operations", "Safety", "Financial", "Management"];
-  const defaultRoles = ["Property Manager","Leasing Agent","Maintenance Technician","Service Manager","Area Director","Virtual Assistant"];
-  const employeeRoles = [...new Set(employees.map(e => e.role).filter(Boolean))];
-  const allRoles = [...new Set([...defaultRoles, ...employeeRoles, ...(item?.roles || [])])].sort();
+  // Canonical list only, plus whatever this course already targets so an
+  // existing off-list value stays visible and removable rather than vanishing.
+  const staleRoles = (item?.roles || []).filter(r => !jobRoles.includes(r));
+  const allRoles = [...jobRoles, ...staleRoles];
   const [form, setForm] = useState({ name: item?.name || "", code: item?.code || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999, status: item?.status || "Active", roles: item?.roles || [] });
   const [saving, setSaving] = useState(false);
   const [versionNote, setVersionNote] = useState("");
@@ -3984,6 +4041,11 @@ function CourseForm({ item, onClose }) {
             <button key={role} onClick={()=>toggleCourseRole(role)} style={{padding:"5px 12px",fontSize:13,borderRadius:9999,cursor:"pointer",fontFamily:"inherit",border:`1px solid ${form.roles.includes(role)?C.teal700:C.gray200}`,background:form.roles.includes(role)?C.teal50:C.white,color:form.roles.includes(role)?C.teal700:C.gray400,fontWeight:form.roles.includes(role)?600:400}}>{form.roles.includes(role)?"\u2713 ":""}{role}</button>
           ))}
         </div>
+        {staleRoles.length > 0 && (
+          <div style={{marginTop:8,fontSize:12,color:"#C44B3B"}}>
+            {staleRoles.join(", ")} {staleRoles.length===1?"is":"are"} not a current job title — nobody holds it, so restricting to it hides this course from everyone. Untick to clean up.
+          </div>
+        )}
       </FormField>
       {isEdit && (
         <FormField label="Content Version" hint="After you edit this course's lessons or quiz, publish the change here so completions stay accurate.">
@@ -4016,31 +4078,22 @@ function CourseForm({ item, onClose }) {
 
 // ── LEARNING PATH FORM ──
 function PathForm({ item, onClose }) {
-  const { employees, courses, setLearningPaths, isLive, getToken } = useData();
+  const { employees, courses, setLearningPaths, isLive, getToken, jobRoles } = useData();
   const isEdit = !!item;
-  // Dynamic roles: pull from employee list + hardcoded defaults + any roles already on this path
-  const defaultRoles = ["All","Property Manager","Leasing Agent","Maintenance Technician","Service Manager","Area Director","Virtual Assistant"];
-  const employeeRoles = [...new Set(employees.map(e => e.role).filter(Boolean))];
-  const existingPathRoles = item?.roles || [];
-  const allRoles = [...new Set([...defaultRoles, ...employeeRoles, ...existingPathRoles])].sort((a,b) => a === "All" ? -1 : b === "All" ? 1 : a.localeCompare(b));
-  const [customRole, setCustomRole] = useState("");
+  // Canonical roles only (plus "All"). Free-typed roles used to be allowed here,
+  // which is how targeting drifted away from real job titles in the first place —
+  // a role that matches no employee assigns the path to nobody, silently.
+  // Anything this path already targets is kept so it stays visible and removable.
+  const staleRoles = (item?.roles || []).filter(r => r !== "All" && !jobRoles.includes(r));
+  const allRoles = ["All", ...jobRoles, ...staleRoles];
   // Drop any courseIds that no longer resolve to an existing course (e.g. deleted outside the
   // in-app delete flow, which normally strips the path reference) — the picker below can't
   // display or uncheck them, so leaving them in would just re-save the stale IDs on every edit.
   const [form, setForm] = useState({ name: item?.name||"", description: item?.description||"", roles: item?.roles||["All"], courseIds: (item?.courseIds||[]).filter(cid => courses.some(c => c.id === cid)), required: item?.required!==false, dueDays: item?.dueDays||"" });
   const [saving, setSaving] = useState(false);
-  const [roleList, setRoleList] = useState(allRoles);
+
   const set = (k,v) => setForm(p => ({...p,[k]:v}));
   const toggleRole = (role) => { if (role==="All"){set("roles",form.roles.includes("All")?[]:["All"]);return;} let next=form.roles.filter(r=>r!=="All"); next=next.includes(role)?next.filter(r=>r!==role):[...next,role]; set("roles",next.length===0?["All"]:next); };
-  const addCustomRole = () => {
-    const r = customRole.trim();
-    if (!r) return;
-    if (!roleList.includes(r)) setRoleList(prev => [...prev, r].sort((a,b) => a === "All" ? -1 : b === "All" ? 1 : a.localeCompare(b)));
-    let next = form.roles.filter(x => x !== "All");
-    if (!next.includes(r)) next.push(r);
-    set("roles", next);
-    setCustomRole("");
-  };
   const toggleCourse = (cid) => { set("courseIds", form.courseIds.includes(cid)?form.courseIds.filter(c=>c!==cid):[...form.courseIds,cid]); };
   const handleSave = async () => {
     if (!form.name.trim()) return alert("Path name is required.");
@@ -4068,13 +4121,17 @@ function PathForm({ item, onClose }) {
     <Modal title={isEdit ? `Edit Path \u2014 ${item.name}` : "Add Learning Path"} onClose={onClose} width={640}>
       <FormField label="Path Name"><input style={S.input} value={form.name} onChange={e => set("name", e.target.value)} /></FormField>
       <FormField label="Description"><textarea style={{...S.input,minHeight:60}} value={form.description} onChange={e => set("description", e.target.value)} /></FormField>
-      <FormField label="Assigned Roles" hint="Select which roles this path applies to, or add a new role">
-        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:4}}>{roleList.map(role => (
+      <FormField label="Assigned Roles" hint="Which job titles this path applies to. The list is shared with Employee Lifecycle.">
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:4}}>{allRoles.map(role => (
           <button key={role} onClick={()=>toggleRole(role)} style={{padding:"5px 12px",fontSize:13,borderRadius:9999,cursor:"pointer",fontFamily:"inherit",border:`1px solid ${form.roles.includes(role)?C.teal700:C.gray200}`,background:form.roles.includes(role)?C.teal50:C.white,color:form.roles.includes(role)?C.teal700:C.gray400,fontWeight:form.roles.includes(role)?600:400}}>{form.roles.includes(role)?"\u2713 ":""}{role}</button>
         ))}</div>
-        <div style={{display:"flex",gap:6,marginTop:8}}>
-          <input style={{...S.input,flex:1,marginTop:0}} value={customRole} onChange={e => setCustomRole(e.target.value)} placeholder="Add a new role..." onKeyDown={e => e.key==="Enter" && (e.preventDefault(), addCustomRole())} />
-          <button style={{...S.btnSecondary,...S.btnSmall}} onClick={addCustomRole}>Add Role</button>
+        {staleRoles.length > 0 && (
+          <div style={{marginTop:8,fontSize:12,color:"#C44B3B"}}>
+            {staleRoles.join(", ")} {staleRoles.length===1?"is":"are"} not a current job title — nobody matches, so this path is not assigned for it. Untick to clean up.
+          </div>
+        )}
+        <div style={{marginTop:8,fontSize:12,color:C.gray400}}>
+          To add a job title, edit the shared <strong>NS_JobRoles</strong> list — it drives this picker and Employee Lifecycle's Job Title field.
         </div>
       </FormField>
       <FormField label="Courses in Path" hint={`${form.courseIds.length} selected \u2014 click to toggle, order matches selection order`}>
@@ -4338,7 +4395,7 @@ function BodyEditor({ value, onChange, minHeight = 150 }) {
 // in one click. Package shape is documented in COURSE-PACKAGE.md.
 // ============================================================
 function SOPImporter() {
-  const { courses, setCourses, learningPaths, setLearningPaths, setLessons, setQuizzes, isLive, getToken } = useData();
+  const { courses, setCourses, learningPaths, setLearningPaths, setLessons, setQuizzes, isLive, getToken, jobRoles } = useData();
   const [raw, setRaw] = useState("");
   const [pkg, setPkg] = useState(null);
   const [parseErr, setParseErr] = useState("");
@@ -4359,7 +4416,7 @@ function SOPImporter() {
   const removeQuestion = (i) => setPkg(p => ({ ...p, quiz: { ...p.quiz, questions: (p.quiz?.questions || []).filter((_, x) => x !== i) } }));
   const recalcDuration = () => setPkg(p => ({ ...p, course: { ...p.course, durationMin: p.lessons.reduce((s, l) => s + (parseInt(l.durationMin, 10) || 0), 0) } }));
   const addLog = (line) => setLogLines(prev => [...prev, line]);
-  const ROLE_OPTIONS = [...new Set(["Property Manager","Leasing Agent","Maintenance Technician","Service Manager","Area Director","Virtual Assistant", ...courses.flatMap(c => c.roles || [])])].sort();
+  const ROLE_OPTIONS = jobRoles;
   const setOpt = (k, v) => setOpts(o => ({ ...o, [k]: v }));
   const toggleRoleIn = (key, role) => setOpts(o => ({ ...o, [key]: o[key].includes(role) ? o[key].filter(r => r !== role) : [...o[key], role] }));
   const chip = (active) => ({ padding: "5px 12px", fontSize: 13, borderRadius: 9999, cursor: "pointer", fontFamily: "inherit", border: `1px solid ${active ? C.teal700 : C.gray200}`, background: active ? C.teal50 : C.white, color: active ? C.teal700 : C.gray400, fontWeight: active ? 600 : 400 });
@@ -4744,9 +4801,9 @@ function ManageView({ mobile }) {
                     <td style={S.td}>{emp.role}</td>
                     {!mobile && <td style={S.td}>{mgr ? mgr.name : "\u2014"}</td>}
                     {!mobile && <td style={S.td}>
-                      {emp.appRole === "Admin" && <span style={S.badge("warning")}>ADMIN</span>}
-                      {emp.appRole !== "Admin" && subs.length > 0 && <span style={S.badge("info")}>MANAGER ({subs.length})</span>}
-                      {emp.appRole !== "Admin" && subs.length === 0 && <span style={S.badge("neutral")}>EMPLOYEE</span>}
+                      {isAppAdmin(emp) && <span style={S.badge("warning")}>ADMIN</span>}
+                      {!isAppAdmin(emp) && subs.length > 0 && <span style={S.badge("info")}>MANAGER ({subs.length})</span>}
+                      {!isAppAdmin(emp) && subs.length === 0 && <span style={S.badge("neutral")}>EMPLOYEE</span>}
                     </td>}
                     {!mobile && <td style={S.td}>{emp.hireDate}</td>}
                     <td style={S.td}><span style={S.badge(emp.active ? "success" : "neutral")}>{emp.active ? "Active" : "Inactive"}</span></td>
