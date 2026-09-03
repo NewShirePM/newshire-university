@@ -16,10 +16,14 @@
     1. Connects interactively (your own login, your own MFA).
     2. Looks up the FHC 101 course record in TrainingCourses by CourseCode, to
        get the item ID the quiz questions link to.
-    3. Reports how many TrainingQuizzes items currently exist for that course.
-    4. Unless -DryRun is passed, deletes those existing items and adds the 40
-       below in their place, in order.
-    5. Verifies the final count is exactly 40 and reports any mismatch.
+    3. Pre-flight: confirms TrainingQuizzes actually has every field this script
+       writes, and stops before changing anything if one is missing. This runs
+       under -DryRun too, so a dry run really does exercise the field names.
+    4. Reports how many TrainingQuizzes items currently exist for that course.
+    5. Unless -DryRun is passed, recycles those existing items and adds the 40
+       below in their place, in order. Recycled items are recoverable from the
+       site recycle bin, so a failed run mid-flight is undoable.
+    6. Verifies the final count is exactly 40 and reports any mismatch.
 
   Run once with -DryRun first if you want to see the before-state without
   changing anything:
@@ -301,6 +305,32 @@ if (-not $course) {
 $courseId = $course.Id
 Write-Host "Found '$CourseCode' as course item $courseId ('$($course.FieldValues['Title'])')." -ForegroundColor Green
 
+# -- Pre-flight: confirm the quiz list has the fields we are about to write -----
+# This runs before anything is deleted, and before the -DryRun exit, on purpose.
+# A wrong internal name is the one failure mode that would otherwise destroy the
+# existing quiz and then fail to add its replacement, and a dry run that skipped
+# this check would tell us nothing about it.
+$required = @("Title","OptionA","OptionB","OptionC","OptionD","CorrectAnswer","QuizSortOrder","QuizCourseID")
+$quizFields = Get-PnPField -List $QuizList
+$present    = $quizFields | ForEach-Object { $_.InternalName }
+$missing    = $required | Where-Object { $present -notcontains $_ }
+
+if ($missing) {
+  Write-Host "'$QuizList' is missing expected field(s): $($missing -join ', ')" -ForegroundColor Red
+  Write-Host "Nothing has been changed. Internal names actually on the list:" -ForegroundColor Yellow
+  $quizFields | Where-Object { -not $_.Hidden } | ForEach-Object {
+    Write-Host "  $($_.InternalName)  [$($_.TypeAsString)]" -ForegroundColor Gray
+  }
+  Disconnect-PnPOnline
+  exit 1
+}
+
+$courseField = $quizFields | Where-Object { $_.InternalName -eq "QuizCourseID" }
+Write-Host "Pre-flight OK: all $($required.Count) expected fields exist. QuizCourseID is type '$($courseField.TypeAsString)'." -ForegroundColor Green
+if ($courseField.TypeAsString -notin @("Lookup","Number","Integer","Text","Counter")) {
+  Write-Host "  Heads up: writing a bare course id ($courseId) into a '$($courseField.TypeAsString)' field may not behave as expected." -ForegroundColor Yellow
+}
+
 # -- Find existing quiz items for this course ----------------------------------
 $existing = Get-PnPListItem -List $QuizList -PageSize 500 | Where-Object {
   $lookupId = $_.FieldValues["QuizCourseID"]
@@ -310,16 +340,16 @@ $existing = Get-PnPListItem -List $QuizList -PageSize 500 | Where-Object {
 Write-Host "Found $($existing.Count) existing '$QuizList' items for $CourseCode." -ForegroundColor Cyan
 
 if ($DryRun) {
-  Write-Host "`n-DryRun set. Would delete $($existing.Count) existing item(s) and add $($Questions.Count) new item(s). No changes made." -ForegroundColor Yellow
+  Write-Host "`n-DryRun set. Would recycle $($existing.Count) existing item(s) and add $($Questions.Count) new item(s). No changes made." -ForegroundColor Yellow
   Disconnect-PnPOnline
   exit 0
 }
 
 # -- Delete existing, add new ---------------------------------------------------
 if ($existing.Count -gt 0) {
-  Write-Host "Removing $($existing.Count) existing item(s) ..." -ForegroundColor Cyan
+  Write-Host "Recycling $($existing.Count) existing item(s) ..." -ForegroundColor Cyan
   foreach ($item in $existing) {
-    Remove-PnPListItem -List $QuizList -Identity $item.Id -Force
+    Remove-PnPListItem -List $QuizList -Identity $item.Id -Recycle -Force
   }
 }
 
