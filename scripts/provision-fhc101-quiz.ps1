@@ -45,7 +45,12 @@
 
 param(
   [string]$SiteUrl     = "https://newshirepmcom.sharepoint.com/sites/NewShirePM",
-  [string]$ClientId    = "32e75ffa-747a-4cf0-8209-6a19150c4547",
+  # "NewShire Migration Tool" app, registered in the CURRENT post-carve-out tenant
+  # (5e932bcd-838c-4dae-b838-f6d22d7c6b8a). The previous default here was
+  # 32e75ffa-747a-4cf0-8209-6a19150c4547, an app registration that lived in
+  # Vanrock's old tenant -- it now fails with AADSTS700016. The July 2026
+  # migration repointed the front-end SPA config but missed these PnP scripts.
+  [string]$ClientId    = "7f310acf-12b1-4ba9-a113-c027614268b9",
   [string]$CoursesList = "TrainingCourses",
   [string]$QuizList    = "TrainingQuizzes",
   [string]$CourseCode  = "FHC 101",

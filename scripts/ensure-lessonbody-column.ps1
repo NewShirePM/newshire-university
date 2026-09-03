@@ -16,10 +16,13 @@
 #>
 
 param(
-  [string]$SiteUrl  = "https://vanrockre.sharepoint.com/sites/NewshirePM",
+  [string]$SiteUrl  = "https://newshirepmcom.sharepoint.com/sites/NewShirePM",
   # Entra app registration used for PnP interactive sign-in (must allow public client flows
   # and have delegated SharePoint permissions). Override if you use a dedicated PnP app.
-  [string]$ClientId = "32e75ffa-747a-4cf0-8209-6a19150c4547",
+  # "NewShire Migration Tool" app in the current post-carve-out tenant. The previous
+  # default, 32e75ffa-747a-4cf0-8209-6a19150c4547, lived in Vanrock's old tenant and
+  # now fails sign-in with AADSTS700016.
+  [string]$ClientId = "7f310acf-12b1-4ba9-a113-c027614268b9",
   [string]$LessonsList = "TrainingLessons"
 )
 
