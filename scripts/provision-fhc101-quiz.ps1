@@ -353,9 +353,14 @@ if ($DryRun) {
 # -- Delete existing, add new ---------------------------------------------------
 if ($existing.Count -gt 0) {
   Write-Host "Recycling $($existing.Count) existing item(s) ..." -ForegroundColor Cyan
+  # -Recycle emits a RecycleBinItemId per item. Collect them rather than letting
+  # 40 bare GUIDs scroll past -- the recycle bin itself is the recovery UI, so a
+  # count is all that's useful here.
+  $recycled = @()
   foreach ($item in $existing) {
-    Remove-PnPListItem -List $QuizList -Identity $item.Id -Recycle -Force
+    $recycled += Remove-PnPListItem -List $QuizList -Identity $item.Id -Recycle -Force
   }
+  Write-Host "  $($recycled.Count) item(s) moved to the site recycle bin (recoverable there if this run goes wrong)." -ForegroundColor Gray
 }
 
 Write-Host "Adding $($Questions.Count) question(s) ..." -ForegroundColor Cyan
