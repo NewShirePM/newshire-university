@@ -314,6 +314,10 @@ function normalizeCourses(items) {
         sortOrder: f.SortOrder || 999,
         status: status,
         roles: roles, // empty = all roles, populated = only these roles
+        // Prerequisite is stored as a COURSE CODE, not an item id. Item ids differ
+        // between the live site and any rebuild; a code survives re-provisioning and
+        // is readable by a human looking at the SharePoint list.
+        prereq: (f.PrerequisiteCourseCode || "").trim(),
         createdDate: item.createdDateTime ? item.createdDateTime.split("T")[0] : null,
         activatedDate: f.ActivatedDate ? f.ActivatedDate.split("T")[0] : null,
         // Content versioning: `version` = current content version; `reqVersion` = the minimum
@@ -583,41 +587,6 @@ async function sendEmail(token, to, subject, bodyHtml) {
 }
 
 // ============================================================
-// NOTIFICATION LOG — dedup prevents repeat sends
-// ============================================================
-async function getNotificationsSentToday(token) {
-  const today = new Date().toISOString().split("T")[0];
-  try {
-    const items = await spGet(token, CONFIG.lists.notifications, {
-      filter: `fields/SentDate ge '${today}T00:00:00Z'`,
-    });
-    return items.map(i => i.fields.NotificationKey || "");
-  } catch { return []; }
-}
-
-async function logNotification(token, key) {
-  try {
-    await spCreate(token, CONFIG.lists.notifications, {
-      Title: key,
-      NotificationKey: key,
-      SentDate: new Date().toISOString(),
-    });
-  } catch (e) { console.error("Failed to log notification:", e); }
-}
-
-// All persistent assignment-notification keys ever logged (not date-scoped), so each employee is
-// notified about a given course only once. Falls back to fetching all keys if startswith filtering fails.
-async function getAssignmentKeys(token) {
-  try {
-    const items = await spGet(token, CONFIG.lists.notifications, { filter: `startswith(fields/NotificationKey,'assigned')` });
-    return new Set(items.map(i => i.fields.NotificationKey || ""));
-  } catch {
-    try { const all = await spGet(token, CONFIG.lists.notifications); return new Set(all.map(i => i.fields.NotificationKey || "")); }
-    catch { return new Set(); }
-  }
-}
-
-// ============================================================
 // DUE DATE UTILITIES
 // ============================================================
 // Per-course due date: max(hireDate, courseCreatedDate) + path.dueDays
@@ -748,214 +717,6 @@ async function sendEnrollmentEmail(token, employee, course) {
      <p style="font-size:13px;color:#7A8585">${course.category} &middot; ${course.durationMin} minutes</p>
      <p>Log in to NewShire University to begin the course.</p>`
   );
-}
-
-// ============================================================
-// CERT EXPIRATION SCANNER — runs on admin login
-// ============================================================
-async function runCertExpirationScan(token, employees, completions, courses, adminEmails) {
-  const today = new Date().toISOString().split("T")[0];
-  const sentKeys = await getNotificationsSentToday(token);
-  let sent = 0;
-
-  for (const emp of employees.filter(e => e.active)) {
-    for (const course of courses) {
-      if (!course.recertDays) continue;
-      const passing = completions.filter(c => c.employeeId === emp.id && c.courseId === course.id && c.status === "passed");
-      if (passing.length === 0) continue;
-      const latest = passing.sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
-      if (!latest.certExpires) continue;
-
-      const daysLeft = Math.round((new Date(latest.certExpires) - new Date(today)) / 86400000);
-      let tier = null;
-      if (daysLeft === 30) tier = "30day";
-      else if (daysLeft === 14) tier = "14day";
-      else if (daysLeft === 0) tier = "today";
-      else if (daysLeft === -7) tier = "7past";
-      if (!tier) continue;
-
-      const key = `cert_${emp.id}_${course.id}_${tier}_${today}`;
-      if (sentKeys.includes(key)) continue;
-
-      if (tier === "7past") {
-        // Escalation: admin only, high priority
-        for (const ae of adminEmails) {
-          await sendEmail(token, ae,
-            `OVERDUE: ${emp.name} — ${courseFmt(course)} certification expired`,
-            `<p style="color:#C44B3B;font-weight:600">Certification has been expired for 7+ days.</p>
-             <p><strong>${emp.name}</strong> (${emp.role}) — <strong>${courseFmt(course)}</strong></p>
-             <p>Expired: <strong>${latest.certExpires}</strong></p>
-             <p style="font-size:13px;color:#7A8585">Please follow up directly to ensure recertification is completed.</p>`
-          );
-        }
-      } else {
-        const urgency = tier === "today" ? "expires today" : tier === "14day" ? "expires in 14 days" : "expires in 30 days";
-        // Email employee
-        await sendEmail(token, emp.email,
-          `Certification ${urgency}: ${courseFmt(course)}`,
-          `<p>Hi ${emp.name.split(" ")[0]},</p>
-           <p>Your certification for <strong>${courseFmt(course)}</strong> <strong>${urgency}</strong> (${latest.certExpires}).</p>
-           <p>Log in to NewShire University to recertify by retaking the course quiz.</p>`
-        );
-        // Email admin
-        for (const ae of adminEmails) {
-          await sendEmail(token, ae,
-            `Cert ${urgency}: ${emp.name} — ${courseFmt(course)}`,
-            `<p><strong>${emp.name}</strong> (${emp.role}) — <strong>${courseFmt(course)}</strong> certification ${urgency}.</p>
-             <p>Expiration date: <strong>${latest.certExpires}</strong></p>`
-          );
-        }
-      }
-      await logNotification(token, key);
-      sent++;
-    }
-  }
-  return sent;
-}
-
-// ============================================================
-// NEW-ASSIGNMENT SCAN — emails an employee when a required course becomes newly
-// assigned to them (a new course added to their role's path, OR a new hire receiving
-// their initial list). One consolidated email per employee; dedup is persistent so no
-// one is emailed twice. First run silently seeds existing assignments (no mass blast).
-// ============================================================
-async function runAssignmentScan(token, employees, learningPaths, courses) {
-  const keys = await getAssignmentKeys(token);
-  const BASELINE = "assigned_baseline_v1";
-  const baselineDone = keys.has(BASELINE);
-
-  // Required + Active + role-matched courses currently assigned to an employee (with due dates)
-  const assignedFor = (emp) => {
-    const reqPaths = getEmployeePaths(emp, learningPaths).filter(p => p.required);
-    const ids = [...new Set(reqPaths.flatMap(p => p.courseIds))];
-    return ids
-      .map(cid => courses.find(c => c.id === cid))
-      .filter(c => c && c.status === "Active" && courseMatchesRole(c, emp.role))
-      .map(c => {
-        const path = reqPaths.find(p => p.dueDays && p.courseIds.includes(c.id));
-        return { course: c, dueDate: path ? getCourseDueDate(c, path, emp) : null };
-      });
-  };
-
-  const activeEmps = employees.filter(e => e.active && !isTrainingExempt(e) && e.email);
-
-  // First run: record current assignments without emailing, so only genuinely new ones notify later
-  if (!baselineDone) {
-    for (const emp of activeEmps) {
-      for (const { course } of assignedFor(emp)) await logNotification(token, `assigned_${emp.id}_${course.id}`);
-    }
-    await logNotification(token, BASELINE);
-    return { sent: 0, baseline: true };
-  }
-
-  let sent = 0;
-  for (const emp of activeEmps) {
-    const newly = assignedFor(emp).filter(({ course }) => !keys.has(`assigned_${emp.id}_${course.id}`));
-    if (newly.length === 0) continue;
-    const rows = newly.map(({ course, dueDate }) =>
-      `<li><strong>${courseFmt(course)}</strong>${dueDate ? ` &mdash; due ${new Date(dueDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}` : ""}</li>`).join("");
-    const bodyHtml = `<p>Hi ${emp.name.split(" ")[0]},</p>` +
-      `<p>The following training ${newly.length > 1 ? "courses have" : "course has"} been assigned to you in NewShire University:</p>` +
-      `<ul>${rows}</ul>` +
-      `<p>Log in to NewShire University to get started.</p>`;
-    const subject = newly.length > 1 ? `New training assigned (${newly.length} courses)` : `New training assigned: ${courseFmt(newly[0].course)}`;
-    try {
-      await sendEmail(token, emp.email, subject, emailTemplate(bodyHtml, subject));
-      for (const { course } of newly) await logNotification(token, `assigned_${emp.id}_${course.id}`);
-      sent++;
-    } catch (e) { console.error(`Assignment email failed for ${emp.email}:`, e); }
-  }
-  return { sent, baseline: false };
-}
-
-// ============================================================
-// MONDAY MANAGER REPORT — runs on Monday admin login
-// ============================================================
-async function runMondayManagerReport(token, employees, completions, courses, learningPaths) {
-  const today = new Date();
-  if (today.getDay() !== 1) return 0; // Monday only
-  const todayStr = today.toISOString().split("T")[0];
-  const sentKeys = await getNotificationsSentToday(token);
-  const weekKey = `monday_report_${todayStr}`;
-  if (sentKeys.includes(weekKey)) return 0;
-
-  // Find all managers (anyone with direct reports)
-  const managers = employees.filter(mgr => {
-    if (!mgr.active) return false;
-    return employees.some(e => e.active && e.id !== mgr.id && (e.reportsTo === mgr.id || e.reportsTo === mgr.email));
-  });
-
-  let sent = 0;
-  for (const mgr of managers) {
-    const reports = employees.filter(e =>
-      e.active && e.id !== mgr.id && (e.reportsTo === mgr.id || e.reportsTo === mgr.email)
-    );
-    if (reports.length === 0) continue;
-
-    const issues = [];
-    for (const emp of reports) {
-      const paths = getEmployeePaths(emp, learningPaths);
-      for (const path of paths) {
-        if (!path.required) continue;
-        // Check due date
-        const { dueDate, status: dueStatus } = getPathDueStatus(path, emp, completions, courses, learningPaths);
-        if (dueStatus === "overdue") {
-          issues.push({ emp, type: "overdue", detail: `${path.name} was due ${dueDate}` });
-        } else if (dueStatus === "due-soon") {
-          issues.push({ emp, type: "due-soon", detail: `${path.name} due ${dueDate}` });
-        }
-        // Check cert expirations
-        for (const cid of path.courseIds) {
-          const course = courses.find(c => c.id === cid);
-          if (!course || !course.recertDays) continue;
-          if (!courseMatchesRole(course, emp.role)) continue;
-          const passing = completions.filter(c => c.employeeId === emp.id && c.courseId === cid && c.status === "passed");
-          if (passing.length === 0) continue;
-          const latest = passing.sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
-          if (!latest.certExpires) continue;
-          const daysLeft = Math.round((new Date(latest.certExpires) - new Date(todayStr)) / 86400000);
-          if (daysLeft < 0) {
-            issues.push({ emp, type: "expired", detail: `${courseFmt(course)} cert expired ${latest.certExpires}` });
-          } else if (daysLeft <= 30) {
-            issues.push({ emp, type: "expiring", detail: `${courseFmt(course)} cert expires ${latest.certExpires} (${daysLeft}d)` });
-          }
-        }
-      }
-    }
-
-    if (issues.length === 0) continue; // No news is good news — skip clean managers
-
-    const colorMap = { overdue: "#C44B3B", expired: "#C44B3B", "due-soon": "#D4960A", expiring: "#D4960A" };
-    const labelMap = { overdue: "OVERDUE", expired: "EXPIRED", "due-soon": "DUE SOON", expiring: "EXPIRING" };
-    const rows = issues.map(i =>
-      `<tr>
-        <td style="padding:8px 12px;border-bottom:1px solid #E8EAEA;font-size:13px">${i.emp.name}</td>
-        <td style="padding:8px 12px;border-bottom:1px solid #E8EAEA;font-size:13px">
-          <span style="display:inline-block;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:600;color:${colorMap[i.type]};background:${colorMap[i.type]}15">${labelMap[i.type]}</span>
-        </td>
-        <td style="padding:8px 12px;border-bottom:1px solid #E8EAEA;font-size:13px">${i.detail}</td>
-      </tr>`
-    ).join("");
-
-    await sendEmail(token, mgr.email,
-      `Weekly Compliance Report — ${reports.length} Direct Reports`,
-      `<p>Hi ${mgr.name.split(" ")[0]},</p>
-       <p>Here is this week's compliance summary for your ${reports.length} direct report${reports.length > 1 ? "s" : ""}.</p>
-       <table style="width:100%;border-collapse:collapse;margin:16px 0">
-         <tr style="background:#EDF4F7">
-           <th style="padding:8px 12px;text-align:left;font-size:12px;color:#28434C;border-bottom:2px solid #D6E7EC">Employee</th>
-           <th style="padding:8px 12px;text-align:left;font-size:12px;color:#28434C;border-bottom:2px solid #D6E7EC">Status</th>
-           <th style="padding:8px 12px;text-align:left;font-size:12px;color:#28434C;border-bottom:2px solid #D6E7EC">Detail</th>
-         </tr>
-         ${rows}
-       </table>
-       <p style="font-size:13px;color:#7A8585">${issues.length} item${issues.length > 1 ? "s" : ""} requiring attention this week.</p>`
-    );
-    sent++;
-  }
-
-  if (sent > 0) await logNotification(token, weekKey);
-  return sent;
 }
 
 // ============================================================
@@ -1602,6 +1363,31 @@ function ProgressBar({ pct, color = C.success, height = 8, label = true }) {
 // MAIN APP
 // ============================================================
 // Helper: get all required course IDs for an employee based on their learning paths
+// ── Prerequisites ────────────────────────────────────────────────────────────
+// A course may name one prerequisite by course code. The gate is a CURRENT
+// certification, not merely a past pass. If the prerequisite carries a recert
+// interval and the learner has let it lapse, the dependent course re-locks until
+// they recertify — a lapsed FHC 101 means they are not currently qualified to be
+// sitting in FHC 301. A prerequisite with no recert interval stays satisfied
+// forever once passed, because getCertStatus reports "current" for those.
+// Routing through getCertStatus also picks up the content-version gate for free:
+// a prerequisite republished as "requires re-training" re-locks the course above it.
+function prereqState(course, courses, completions, employeeId) {
+  const code = (course && course.prereq) || "";
+  if (!code) return { locked: false, prereq: null };
+  const prereq = courses.find(c => c.code === code);
+  // A prerequisite naming a course that does not exist yet must not lock anyone out.
+  // It is a data error, and ensure-prereq-column.ps1 reports it; learners are unaffected.
+  if (!prereq) return { locked: false, prereq: null, missing: code };
+  const latest = completions
+    .filter(c => c.employeeId === employeeId && c.courseId === prereq.id && c.status === "passed")
+    .sort((a, b) => (b.completedDate || "").localeCompare(a.completedDate || ""))[0];
+  const cert = getCertStatus(latest, prereq); // incomplete | expired | expiring | current
+  // "expiring" still counts. It has not lapsed, and locking someone out during their
+  // own renewal window would be its own problem.
+  return { locked: cert === "incomplete" || cert === "expired", prereq, reason: cert };
+}
+
 function getRequiredCourseIds(employee, learningPaths, courses) {
   const paths = getEmployeePaths(employee, learningPaths);
   const allCourseIds = paths.flatMap(p => p.courseIds);
@@ -1713,43 +1499,32 @@ function App() {
   }
 
   const isLive = authState === "ready"; // connected to SharePoint
-  const [notifBanner, setNotifBanner] = useState(null); // { text, type } for admin notification feedback
 
-  // ── Admin auto-scan: cert expirations only ──
-  // NOTE: Monday manager compliance reports are handled exclusively by Power Automate.
-  // Removed React-side runMondayManagerReport call — it caused duplicate emails on every
-  // login due to a race condition between concurrent sessions before the NotificationLog
-  // deduplication key could be written. PA scheduled flow is the single source of truth.
-  useEffect(() => {
-    if (!isLive || !currentUser) return;
-    const isAdmin = isAppAdmin(currentUser);
-    (async () => {
-      try {
-        const token = await getToken();
-        if (!token) return;
-        // Cert expiration scanner runs for admins only
-        if (isAdmin) {
-          const adminEmails = employees.filter(e => e.active && isAppAdmin(e)).map(e => e.email);
-          const certsSent = await runCertExpirationScan(token, employees, completions, courses, adminEmails.length > 0 ? adminEmails : [CONFIG.adminEmail]);
-          const assignResult = await runAssignmentScan(token, employees, learningPaths, courses);
-          const msgs = [];
-          if (certsSent > 0) msgs.push(`${certsSent} certification reminder${certsSent > 1 ? "s" : ""}`);
-          if (assignResult.sent > 0) msgs.push(`${assignResult.sent} new-assignment email${assignResult.sent > 1 ? "s" : ""}`);
-          if (msgs.length) setNotifBanner({ text: `Sent ${msgs.join(" and ")}.`, type: "info" });
-        }
-        // Auto-dismiss banner after 8 seconds
-        if (notifBanner || true) setTimeout(() => setNotifBanner(null), 8000);
-      } catch (err) {
-        console.error("Notification scan error:", err);
-      }
-    })();
-  }, [isLive, currentUser?.id]); // eslint-disable-line
+  // ── Scheduled notifications ──
+  // Certification reminders, new-assignment emails and the Monday manager
+  // report all run unattended in GitHub Actions now
+  // (.github/workflows/notifications.yml -> scripts/send-notifications.mjs).
+  //
+  // They used to fire here on admin login, which meant they only ran on days
+  // someone signed in — and because the cert tiers match an EXACT day count
+  // (30 / 14 / 0 / -7), a day with no login missed that reminder permanently.
+  // Do NOT re-add them here: two senders would double up, which is the same
+  // race condition that got the Monday report moved out of the app before.
 
   // ── Enroll handler ──
   const handleEnroll = async (employeeId, courseId) => {
     if (enrollments.some(e => e.employeeId === employeeId && e.courseId === courseId)) return;
     const emp = employees.find(e => e.id === employeeId);
     const course = courses.find(c => c.id === courseId);
+    // Prerequisite gate. Also enforced on the card and in CourseView; this is the
+    // one that catches an assignment made by a manager from the Team screen.
+    const lock = prereqState(course, courses, completions, employeeId);
+    if (lock.locked) {
+      alert(lock.reason === "expired"
+        ? `${courseFmt(course)} requires a current ${courseFmt(lock.prereq)} certification, and that certification has expired.`
+        : `${courseFmt(course)} requires ${courseFmt(lock.prereq)} to be completed first.`);
+      return;
+    }
     if (isLive && emp) {
       try {
         const token = await getToken();
@@ -1815,7 +1590,7 @@ function App() {
           `<p>You must complete this course and pass the assessment with a score of ${course.passingScore || CONFIG.passingScore}% or higher.</p>` +
           dueLine + notesLine +
           `<p>Log in to NewShire University to begin.</p>`;
-        sendEmail(token, emp.email, `Course Assigned: ${courseFmt(course)}`, emailTemplate(bodyHtml, `Course Assigned: ${courseFmt(course)}`))
+        sendEmail(token, emp.email, `Course Assigned: ${courseFmt(course)}`, bodyHtml)
           .catch(e => console.error("Assignment email failed:", e));
       } catch (err) { console.error("Assign failed:", err); alert("Failed to assign: " + err.message); }
     } else {
@@ -1929,14 +1704,6 @@ function App() {
           </div>
         )}
 
-        {/* Notification scan results banner */}
-        {notifBanner && (
-          <div style={{ background: "#EDF4F7", borderBottom: `1px solid ${C.teal100}`, padding: "6px 20px", fontSize: 12, color: C.teal700, textAlign: "center", fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-            <span style={{ fontSize: 14 }}>✉</span> {notifBanner.text}
-            <button onClick={() => setNotifBanner(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: C.teal500, padding: "0 4px" }}>×</button>
-          </div>
-        )}
-
         {/* Header */}
         <div style={S.header}>
           <div>
@@ -2024,7 +1791,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
   const [showCompleted, setShowCompleted] = useState(false); // Completed (non-recert) section collapsed by default
 
   // Sub-views
-  if (view?.type === "course") return <CourseView courseId={view.courseId} user={user} completions={completions} setCompletions={setCompletions} onQuizSubmit={onQuizSubmit} onBack={() => setView(null)} mobile={mobile} />;
+  if (view?.type === "course") return <CourseView courseId={view.courseId} user={user} completions={completions} setCompletions={setCompletions} onQuizSubmit={onQuizSubmit} onBack={() => setView(null)} setView={setView} mobile={mobile} />;
   if (view?.type === "quiz") return <QuizView courseId={view.courseId} user={user} completions={completions} setCompletions={setCompletions} onQuizSubmit={onQuizSubmit} onBack={() => setView({ type: "course", courseId: view.courseId })} />;
 
   const paths = getEmployeePaths(user, learningPaths);
@@ -2500,7 +2267,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
 // ============================================================
 // COURSE VIEW (lessons + quiz launcher)
 // ============================================================
-function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit, onBack, mobile }) {
+function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit, onBack, setView, mobile }) {
   const { courses, lessons: allLessons, quizzes } = useData();
   const course = courses.find(c => c.id === courseId);
   if (!course) return <div style={{ padding: 40, textAlign: "center", color: C.gray400 }}>Course not found.</div>;
@@ -2535,6 +2302,30 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
       }
     }
   }, []);
+
+  // Deep-link guard. Every hook above has already run, so this is safe to return past.
+  const lock = prereqState(course, courses, completions, user.id);
+  if (lock.locked) {
+    return (
+      <div>
+        <button onClick={onBack} style={{ ...S.btnSecondary, marginBottom: 16, gap: 6 }}><Icons.Back /> Back to My Training</button>
+        <div style={{ ...S.card, borderLeft: `3px solid ${C.gold500}` }}>
+          <div style={{ ...S.badge("neutral"), color: C.gray400, background: C.gray100, marginBottom: 10 }}>{lock.reason === "expired" ? "PREREQUISITE EXPIRED" : "PREREQUISITE REQUIRED"}</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: C.teal700, marginBottom: 8 }}>{courseFmt(course)}</div>
+          <div style={{ fontSize: 14, color: C.gray600, lineHeight: 1.5, marginBottom: 16 }}>
+            {lock.reason === "expired"
+              ? <>This course requires a current <strong>{courseFmt(lock.prereq)}</strong> certification, and yours has expired.
+                  Recertify and this course unlocks again automatically.</>
+              : <>This course builds on <strong>{courseFmt(lock.prereq)}</strong>, which you have not completed yet.
+                  Finish that course first and this one will unlock automatically.</>}
+          </div>
+          <button style={S.btnPrimary} onClick={() => setView({ type: "course", courseId: lock.prereq.id })}>
+            Go to {courseFmt(lock.prereq)}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -2986,6 +2777,10 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
       const course = courses.find(c => c.id === cid);
       if (!course) return null;
       if (course.status !== "Active") return null; // Only show Active courses
+      // Role-restricted courses the employee's role is filtered out of are not theirs to
+      // complete — the learner's own views and the transcript already hide these, so counting
+      // them here marked people non-compliant for courses they could never see.
+      if (!courseMatchesRole(course, emp.role)) return null;
       const latest = empCompletions.filter(c => c.courseId === cid && c.status === "passed").sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
       const status = getCertStatus(latest, course);
       if (status === "current") completed++;
@@ -3076,7 +2871,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
           `<ul>${rows}</ul>` +
           `<p>Log in to NewShire University to complete your training. Thank you for keeping your compliance current.</p>`;
         try {
-          if (isLive) await sendEmail(token, m.emp.email, "Action needed: incomplete required training", emailTemplate(bodyHtml, "Incomplete Required Training"));
+          if (isLive) await sendEmail(token, m.emp.email, "Action needed: incomplete required training", bodyHtml);
           sent++;
         } catch (e) { failed++; console.error("Reminder failed for", m.emp.email, e); }
       }
@@ -3583,6 +3378,7 @@ function TrainingLibraryView({ user, completions, enrollments, assignments, onEn
             const isRequired = requiredCourseIds.includes(course.id);
             const isEnrolled = myEnrollmentIds.includes(course.id);
             const isVoluntaryAvailable = !isRequired && !isEnrolled;
+            const lock = prereqState(course, courses, completions, user.id);
 
             return (
               <div
@@ -3603,6 +3399,7 @@ function TrainingLibraryView({ user, completions, enrollments, assignments, onEn
                       {isRequired && <span style={S.badge("warning")}>REQUIRED</span>}
                       {isEnrolled && course.status !== "Coming Soon" && <span style={{ ...S.badge("neutral"), color: C.teal400, background: C.teal50 }}>ENROLLED</span>}
                       {isEnrolled && course.status === "Coming Soon" && <span style={{ ...S.badge("neutral"), color: C.gold500, background: "#FFF8E8" }}>PRE-REGISTERED</span>}
+                      {lock.locked && <span style={{ ...S.badge("neutral"), color: C.gray400, background: C.gray100 }}>{lock.reason === "expired" ? "PREREQUISITE EXPIRED" : "PREREQUISITE REQUIRED"}</span>}
                     </div>
                     {certStatus !== "incomplete" && (
                       <span style={S.badge(certStatus === "current" ? "success" : certStatus === "expired" ? "error" : "warning")}>
@@ -3611,14 +3408,21 @@ function TrainingLibraryView({ user, completions, enrollments, assignments, onEn
                     )}
                   </div>
                   <div
-                    onClick={() => course.status !== "Coming Soon" && setView({ type: "course", courseId: course.id })}
-                    style={{ cursor: course.status === "Coming Soon" ? "default" : "pointer" }}
+                    onClick={() => course.status !== "Coming Soon" && !lock.locked && setView({ type: "course", courseId: course.id })}
+                    style={{ cursor: (course.status === "Coming Soon" || lock.locked) ? "default" : "pointer" }}
                   >
                     <div style={{ fontSize: 16, fontWeight: 600, color: C.teal700, marginBottom: 6 }}>{courseFmt(course)}</div>
                     <div style={{ fontSize: 13, color: C.gray400, marginBottom: 12, lineHeight: 1.4 }}>{course.description}</div>
                   </div>
                 </div>
                 <div>
+                  {lock.locked && (
+                    <div style={{ fontSize: 12, color: C.gray600, background: C.gray100, borderRadius: 6, padding: "8px 10px", marginBottom: 10 }}>
+                      {lock.reason === "expired"
+                        ? <>Your <strong>{courseFmt(lock.prereq)}</strong> certification has expired. Recertify to unlock this course.</>
+                        : <>Complete <strong>{courseFmt(lock.prereq)}</strong> before starting this course.</>}
+                    </div>
+                  )}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: C.gray400, borderTop: `1px solid ${C.gray100}`, paddingTop: 10, marginBottom: 10 }}>
                     <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Icons.Clock /> {course.durationMin} min</span>
                     <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Icons.Play /> {courseLessons.length} lessons</span>
@@ -3894,7 +3698,7 @@ function EmployeeForm({ item, onClose }) {
 
 // ── COURSE FORM ──
 function CourseForm({ item, onClose }) {
-  const { employees, enrollments, learningPaths, setCourses, setLearningPaths, isLive, getToken, jobRoles } = useData();
+  const { courses, employees, enrollments, learningPaths, setCourses, setLearningPaths, isLive, getToken, jobRoles } = useData();
   const isEdit = !!item;
   const wasComingSoon = isEdit && item.status === "Coming Soon";
   const categories = ["Onboarding", "Compliance", "Leasing", "Maintenance", "Operations", "Safety", "Financial", "Management"];
@@ -3902,7 +3706,7 @@ function CourseForm({ item, onClose }) {
   // existing off-list value stays visible and removable rather than vanishing.
   const staleRoles = (item?.roles || []).filter(r => !jobRoles.includes(r));
   const allRoles = [...jobRoles, ...staleRoles];
-  const [form, setForm] = useState({ name: item?.name || "", code: item?.code || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999, status: item?.status || "Active", roles: item?.roles || [] });
+  const [form, setForm] = useState({ name: item?.name || "", code: item?.code || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999, status: item?.status || "Active", roles: item?.roles || [], prereq: item?.prereq || "" });
   const [saving, setSaving] = useState(false);
   const [versionNote, setVersionNote] = useState("");
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -3973,7 +3777,7 @@ function CourseForm({ item, onClose }) {
         dueLine +
         `<p>Log in to NewShire University to start the course.</p>`;
       try {
-        await sendEmail(token, emp.email, `Course Now Available: ${courseName}`, emailTemplate(bodyHtml, `Course Now Available: ${courseName}`));
+        await sendEmail(token, emp.email, `Course Now Available: ${courseName}`, bodyHtml);
         sent++;
       } catch (e) { console.error(`Go-live email failed for ${emp.email}:`, e); }
     }
@@ -3986,7 +3790,7 @@ function CourseForm({ item, onClose }) {
     // Set ActivatedDate any time course becomes Active and doesn't already have one
     const needsActivatedDate = form.status === "Active" && (!isEdit || !item.activatedDate);
     setSaving(true);
-    const fields = { Title: form.name.trim(), CourseCode: form.code.trim(), CourseDescription: form.description, Category: form.category, DurationMin: parseInt(form.durationMin,10)||0, RecertDays: parseInt(form.recertDays,10)||0, PassingScore: parseInt(form.passingScore,10)||80, SortOrder: parseInt(form.sortOrder,10)||999, CourseActive: form.status !== "Archived", CourseStatus: form.status, CourseRoles: form.roles.join(",") };
+    const fields = { Title: form.name.trim(), CourseCode: form.code.trim(), CourseDescription: form.description, Category: form.category, DurationMin: parseInt(form.durationMin,10)||0, RecertDays: parseInt(form.recertDays,10)||0, PassingScore: parseInt(form.passingScore,10)||80, SortOrder: parseInt(form.sortOrder,10)||999, CourseActive: form.status !== "Archived", CourseStatus: form.status, CourseRoles: form.roles.join(","), PrerequisiteCourseCode: (form.prereq || "").trim() };
     if (needsActivatedDate) fields.ActivatedDate = new Date().toISOString();
     try {
       if (isLive) {
@@ -4033,6 +3837,15 @@ function CourseForm({ item, onClose }) {
       <FormField label="Description"><textarea style={{ ...S.input, minHeight: 60 }} value={form.description} onChange={e => set("description", e.target.value)} /></FormField>
       <FormRow><FormField label="Duration (minutes)"><input style={S.input} type="number" value={form.durationMin} onChange={e => set("durationMin", e.target.value)} /></FormField><FormField label="Passing Score (%)" hint="Leave at 80 for default"><input style={S.input} type="number" value={form.passingScore} onChange={e => set("passingScore", e.target.value)} /></FormField></FormRow>
       <FormRow><FormField label="Recert Period (days)" hint="0 or blank = no recert"><input style={S.input} type="number" value={form.recertDays} onChange={e => set("recertDays", e.target.value)} placeholder="e.g. 365" /></FormField><FormField label="Sort Order" hint="Lower = first"><input style={S.input} type="number" value={form.sortOrder} onChange={e => set("sortOrder", e.target.value)} /></FormField></FormRow>
+      <FormRow><FormField label="Prerequisite" hint="Must be passed before this course unlocks. Leave as None for most courses.">
+        <select style={S.select} value={form.prereq} onChange={e => set("prereq", e.target.value)}>
+          <option value="">None</option>
+          {courses
+            .filter(c => c.code && c.id !== item?.id && c.status !== "Archived")
+            .sort((a, b) => (a.code || "").localeCompare(b.code || ""))
+            .map(c => <option key={c.id} value={c.code}>{courseFmt(c)}</option>)}
+        </select>
+      </FormField></FormRow>
         <FormField label="Status">{wasComingSoon && form.status === "Active" && <div style={{fontSize:12,color:C.gold500,marginBottom:4}}>Changing to Active will notify all pre-registered employees and those with this course in their learning path.</div>}<select style={S.select} value={form.status} onChange={e => set("status", e.target.value)}><option value="Active">Active</option><option value="Coming Soon">Coming Soon</option><option value="Archived">Archived</option></select></FormField>
       <FormField label="Role Restrictions" hint={form.roles.length === 0 ? "No restrictions \u2014 all roles will see this course" : `${form.roles.length} role${form.roles.length > 1 ? "s" : ""} selected \u2014 only these roles will see this course in their learning path`}>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:4}}>
