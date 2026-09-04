@@ -1,0 +1,63 @@
+name: NewShire University notifications
+
+# Sends the training notifications that used to depend on an admin signing in:
+#   - certification expiry reminders (30 / 14 / 0 / -7 days)
+#   - new-training-assigned emails
+#   - the Monday manager compliance report (replaces the Power Automate flow)
+#
+# Why this exists: the in-app scans only ran on admin login, and the cert tiers
+# match an EXACT day count. A day with nobody logging in meant that reminder was
+# missed permanently — the tier never matches again.
+#
+# SCHEDULE / TIMEZONE
+# GitHub cron is UTC, ignores daylight saving, and scheduled jobs are BEST
+# EFFORT — they routinely run late under load (pm-hub has seen 2-6 hours).
+# The script computes "today" in Eastern time, so the run window must sit far
+# enough past ET midnight that even a long delay stays on the same ET date:
+#   12:00 UTC = 8 AM EDT / 7 AM EST   <- primary
+#   14:00 UTC = 10 AM EDT / 9 AM EST  <- backup if the first slips
+# Even a 6-hour delay on the primary lands at 2 PM EDT, still the same ET day.
+# The second run is free: every job dedups through the NotificationLog list, so
+# a double run never double-sends.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   NSU_TENANT_ID, NSU_CLIENT_ID, NSU_CLIENT_SECRET
+# Optional: NSU_SITE_ID, NSU_SENDER
+# Until they are set, runs are a harmless no-op. See scripts/SETUP-NOTIFICATIONS.md.
+
+on:
+  schedule:
+    - cron: "0 12 * * *"    # primary
+    - cron: "0 14 * * *"    # backup
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview only — compute everything, send nothing"
+        type: boolean
+        default: true
+
+# Never let a manual run overlap a scheduled one; the dedup log is read once at
+# start, so two concurrent runs could both decide to send the same email.
+concurrency:
+  group: nsu-notifications
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Send notifications
+        env:
+          NSU_TENANT_ID: ${{ secrets.NSU_TENANT_ID }}
+          NSU_CLIENT_ID: ${{ secrets.NSU_CLIENT_ID }}
+          NSU_CLIENT_SECRET: ${{ secrets.NSU_CLIENT_SECRET }}
+          NSU_SITE_ID: ${{ secrets.NSU_SITE_ID }}
+          NSU_SENDER: ${{ secrets.NSU_SENDER }}
+          NSU_DRY_RUN: ${{ inputs.dry_run }}
+        run: node scripts/send-notifications.mjs
