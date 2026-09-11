@@ -3701,7 +3701,9 @@ function CourseForm({ item, onClose }) {
   const { courses, employees, enrollments, learningPaths, setCourses, setLearningPaths, isLive, getToken, jobRoles } = useData();
   const isEdit = !!item;
   const wasComingSoon = isEdit && item.status === "Coming Soon";
-  const categories = ["Onboarding", "Compliance", "Leasing", "Maintenance", "Operations", "Safety", "Financial", "Management"];
+  // Must stay in sync with the TrainingCourses.Category CHOICE column in SharePoint.
+  // It has no fill-in choices, so an option that is not also a list choice fails the save with a 400.
+  const categories = ["Onboarding", "Compliance", "Systems", "Leasing", "Maintenance", "Operations"];
   // Canonical list only, plus whatever this course already targets so an
   // existing off-list value stays visible and removable rather than vanishing.
   const staleRoles = (item?.roles || []).filter(r => !jobRoles.includes(r));
@@ -4446,7 +4448,7 @@ function SOPImporter() {
               <FormField label="Course name"><input style={S.input} value={pkg.course.name || ""} onChange={e => setCourseField("name", e.target.value)} /></FormField>
               <FormRow>
                 <FormField label="Code"><input style={S.input} value={pkg.course.code || ""} onChange={e => setCourseField("code", e.target.value)} /></FormField>
-                <FormField label="Category"><select style={S.select} value={pkg.course.category || "Operations"} onChange={e => setCourseField("category", e.target.value)}>{["Onboarding", "Compliance", "Leasing", "Maintenance", "Operations", "Safety", "Financial", "Management"].map(c => <option key={c} value={c}>{c}</option>)}</select></FormField>
+                <FormField label="Category"><select style={S.select} value={pkg.course.category || "Operations"} onChange={e => setCourseField("category", e.target.value)}>{["Onboarding", "Compliance", "Systems", "Leasing", "Maintenance", "Operations"].map(c => <option key={c} value={c}>{c}</option>)}</select></FormField>
               </FormRow>
               <FormField label="Description"><textarea style={{ ...S.input, minHeight: 50 }} value={pkg.course.description || ""} onChange={e => setCourseField("description", e.target.value)} /></FormField>
 
