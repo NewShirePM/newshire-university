@@ -20,6 +20,7 @@ const CONFIG = {
     completions:  "TrainingCompletions",
     enrollments:  "TrainingEnrollments",
     assignments:  "TrainingAssignments",
+    acknowledgments: "TrainingAcknowledgments", // signed attestations for External (e.g. AppFolio Academy) lessons
     config:       "AppConfig",
     notifications: "NotificationLog",
     jobRoles:     "NS_JobRoles",   // shared — canonical job titles, owned/seeded by Employee Lifecycle
@@ -37,6 +38,29 @@ const SITE_URL = `${GRAPH_BASE}/sites/${CONFIG.siteId}`;
 // Global email pause flag — checked by sendEmail before every send
 // DEFAULT: false (active) for production. Toggle via Settings tab.
 let EMAIL_PAUSED = false;
+
+// ============================================================
+// EXTERNAL COURSES — acknowledgment (attestation) wording
+// ============================================================
+// External courses (CourseType = "External") are taught on another platform — AppFolio Academy
+// today. There is no quiz: the learner opens each lesson on the provider's site, then signs a
+// per-lesson acknowledgment. The FULL rendered text is stored on every TrainingAcknowledgments
+// record together with ACK_VERSION, so a later rewording never changes what someone already signed.
+// Change the wording -> bump ACK_VERSION.
+const ACK_VERSION = "EXT-ACK-v1";
+function ackPlatform(course) {
+  const p = (course && course.externalProvider) || "AppFolio Academy";
+  return p.replace(/\s+Academy$/i, "") || p;
+}
+function ackText(employeeName, lessonTitle, course, isoDate) {
+  const provider = (course && course.externalProvider) || "AppFolio Academy";
+  const platform = ackPlatform(course);
+  const date = new Date(isoDate).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  return `I, ${employeeName}, acknowledge that on ${date} I completed the ${provider} course "${lessonTitle}" in its entirety. ` +
+    `I understand the ${platform} functions and workflows presented in this course and accept responsibility for performing them as taught. ` +
+    `I understand that I am expected to apply this knowledge in my daily work and that it is my responsibility to ask my supervisor for clarification on anything I did not understand before performing these tasks. ` +
+    `I further understand that this training covers the use of ${platform} software only and does not replace NewShire policies and procedures, which govern how and when these functions are performed.`;
+}
 
 // ============================================================
 // REACT CONTEXT — All components pull data from here
@@ -318,6 +342,10 @@ function normalizeCourses(items) {
         // between the live site and any rebuild; a code survives re-provisioning and
         // is readable by a human looking at the SharePoint list.
         prereq: (f.PrerequisiteCourseCode || "").trim(),
+        // "External" = taught on another platform (AppFolio Academy); completed by per-lesson
+        // acknowledgment instead of a quiz. Blank/"Internal" = normal course.
+        courseType: (f.CourseType || "Internal").trim() || "Internal",
+        externalProvider: f.ExternalProvider || "",
         createdDate: item.createdDateTime ? item.createdDateTime.split("T")[0] : null,
         activatedDate: f.ActivatedDate ? f.ActivatedDate.split("T")[0] : null,
         // Content versioning: `version` = current content version; `reqVersion` = the minimum
@@ -373,6 +401,7 @@ function normalizeLessons(items) {
       videoUrl: f.VideoURL || null,
       documentUrl: f.DocumentURL || null,
       documentTitle: f.DocumentTitle || null,
+      externalUrl: f.ExternalURL || null, // External courses: the provider's course URL (opens in a new tab)
       // Supplements: stored as JSON array in SupplementURL, or legacy single URL
       supplements: (() => {
         const raw = f.SupplementURL || "";
@@ -420,6 +449,8 @@ function normalizeCompletions(items, employeesByEmail) {
       status: (f.CompStatus || "").toLowerCase(),
       certExpires: f.CertExpires ? f.CertExpires.split("T")[0] : null,
       completedVersion: f.CompletedVersion || 1, // course content version at time of completion
+      // External-course completions are earned by signed acknowledgments, not a quiz score.
+      acknowledged: /"type"\s*:\s*"acknowledgment"/.test(f.Answers || ""),
     };
   });
 }
@@ -459,18 +490,37 @@ function normalizeAssignments(items, employeesByEmail) {
   });
 }
 
+function normalizeAcknowledgments(items, employeesByEmail) {
+  return items.map(item => {
+    const f = item.fields;
+    const email = (f.AckEmployeeEmail || "").toLowerCase();
+    const emp = employeesByEmail[email];
+    return {
+      id: String(item.id),
+      employeeId: emp ? emp.id : email,
+      courseId: String(f.AckCourseID || ""),
+      lessonId: String(f.AckLessonID || ""),
+      version: f.AckVersion || "",
+      launchedAt: f.LaunchedAt || null,
+      acknowledgedAt: f.AcknowledgedAt || item.createdDateTime || null,
+    };
+  });
+}
+
 // ============================================================
 // DATA LOADER — parallel fetch of all 8 lists
 // ============================================================
 async function loadAllData(token) {
   const L = CONFIG.lists;
-  const [usersRaw, coursesRaw, pathsRaw, lessonsRaw, quizzesRaw, completionsRaw, enrollmentsRaw, assignmentsRaw, configRaw, jobRolesRaw] =
+  const [usersRaw, coursesRaw, pathsRaw, lessonsRaw, quizzesRaw, completionsRaw, enrollmentsRaw, assignmentsRaw, configRaw, jobRolesRaw, acksRaw] =
     await Promise.all([
       spGet(token, L.users), spGet(token, L.courses), spGet(token, L.paths),
       spGet(token, L.lessons), spGet(token, L.quizzes), spGet(token, L.completions),
       spGet(token, L.enrollments), spGet(token, L.assignments).catch(() => []), spGet(token, L.config),
       // Shared with Employee Lifecycle. Tolerate absence — falls back to DEFAULT_JOB_ROLES.
       spGet(token, L.jobRoles).catch(() => []),
+      // External-course acknowledgments. Tolerate absence until the list is provisioned.
+      spGet(token, L.acknowledgments).catch(() => []),
     ]);
   const employees = normalizeEmployees(usersRaw);
   const employeesByEmail = {};
@@ -488,7 +538,8 @@ async function loadAllData(token) {
     if (f.Title === "DefaultPassingScore" && f.Value) CONFIG.passingScore = parseInt(f.Value, 10) || 80;
     if (f.Title === "EmailsPaused") EMAIL_PAUSED = f.Value === "true";
   }
-  return { employees, employeesByEmail, courses, paths, lessons, quizzes, completions, enrollments, assignments, jobRoles: normalizeJobRoles(jobRolesRaw) };
+  const acknowledgments = normalizeAcknowledgments(acksRaw, employeesByEmail);
+  return { employees, employeesByEmail, courses, paths, lessons, quizzes, completions, enrollments, assignments, acknowledgments, jobRoles: normalizeJobRoles(jobRolesRaw) };
 }
 
 // ============================================================
@@ -518,6 +569,7 @@ async function submitQuizToSP(token, employee, course, score, passed, answersJso
     status: passed ? "passed" : "failed",
     certExpires: certExpires ? certExpires.split("T")[0] : null,
     completedVersion: course.version || 1,
+    acknowledged: /"type"\s*:\s*"acknowledgment"/.test(answersJson || ""),
   };
 }
 
@@ -686,6 +738,15 @@ async function sendQuizResultEmail(token, employee, course, score, passed, admin
     const certLine = course.recertDays
       ? `<p>Your certification is valid for <strong>${course.recertDays} days</strong>. You will receive a reminder before it expires.</p>`
       : "";
+    if (isExternalCourse(course)) {
+      await sendEmail(token, employee.email,
+        `Course Completed: ${courseFmt(course)}`,
+        `<p>Hi ${employee.name.split(" ")[0]},</p>
+         <p>You completed <strong>${courseFmt(course)}</strong>. Your signed acknowledgment for each lesson is on file in NewShire University.</p>
+         ${certLine}`
+      );
+      return;
+    }
     await sendEmail(token, employee.email,
       `Course Passed: ${courseFmt(course)}`,
       `<p>Hi ${employee.name.split(" ")[0]},</p>
@@ -1262,6 +1323,17 @@ function courseMatchesRole(course, role) {
   return course.roles.includes(role);
 }
 
+// External course = taught on another platform, completed by signed acknowledgment (no quiz)
+function isExternalCourse(course) {
+  return !!course && (course.courseType || "").toLowerCase() === "external";
+}
+
+// Score column text. Acknowledgment-based completions have no quiz score to show.
+function scoreText(completion) {
+  if (!completion) return "";
+  return completion.acknowledged ? "Acknowledged" : `${completion.score}%`;
+}
+
 // Format course display name: "FHC 101 — Course Title" or just "Course Title" if no code
 function courseFmt(course) {
   if (!course) return "";
@@ -1328,7 +1400,7 @@ function printCertificate(employeeName, courseName, courseCode, score, completed
     ${courseCode ? `<div style="font-size:12px;color:#CDA04B;font-weight:600;letter-spacing:0.06em;">${courseCode}</div>` : ""}
     <div class="gold-bar"></div>
     <div style="display:flex;gap:48px;margin-top:16px;align-items:flex-start;">
-      <div><div style="font-size:22px;font-weight:700;color:#28434C;">${score}%</div><div style="font-size:11px;color:#7A8585;text-transform:uppercase;letter-spacing:0.06em;">Score</div></div>
+      <div><div style="font-size:22px;font-weight:700;color:#28434C;">${typeof score === "number" ? score + "%" : score}</div><div style="font-size:11px;color:#7A8585;text-transform:uppercase;letter-spacing:0.06em;">${typeof score === "number" ? "Score" : "Completion"}</div></div>
       <div><div style="font-size:15px;font-weight:600;color:#28434C;">${new Date(completedDate).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</div><div style="font-size:11px;color:#7A8585;text-transform:uppercase;letter-spacing:0.06em;">Date Completed</div></div>
     </div>
     ${expiryLine}
@@ -1414,6 +1486,7 @@ function App() {
   const [completions, setCompletions] = useState([]);
   const [enrollments, setEnrollments] = useState([]);
   const [assignments, setAssignments] = useState([]);
+  const [acknowledgments, setAcknowledgments] = useState([]); // signed External-course attestations
   // Canonical job titles, shared with Employee Lifecycle via NS_JobRoles.
   const [jobRoles, setJobRoles] = useState(DEFAULT_JOB_ROLES);
   const [currentUser, setCurrentUser] = useState(null);
@@ -1453,6 +1526,7 @@ function App() {
         setCompletions(data.completions);
         setEnrollments(data.enrollments);
         setAssignments(data.assignments || []);
+        setAcknowledgments(data.acknowledgments || []);
         setJobRoles(data.jobRoles || DEFAULT_JOB_ROLES);
         // Match logged-in user by email
         const email = account.username.toLowerCase();
@@ -1631,6 +1705,7 @@ function App() {
       completedDate: TODAY,
       score,
       status: passed ? "passed" : "failed",
+      acknowledged: /"type"\s*:\s*"acknowledgment"/.test(answersJson || ""),
       ...(certExpires ? { certExpires } : {}),
     };
     setCompletions(prev => [...prev, comp]);
@@ -1690,7 +1765,7 @@ function App() {
   const enterViewAs = (id) => { setViewAsId(id || null); setTab(0); setView(null); };
 
   // ── Context value ──
-  const ctx = { employees, setEmployees, courses, setCourses, learningPaths, setLearningPaths, lessons, setLessons, quizzes, setQuizzes, completions, enrollments, isLive, getToken: getToken, jobRoles };
+  const ctx = { employees, setEmployees, courses, setCourses, learningPaths, setLearningPaths, lessons, setLessons, quizzes, setQuizzes, completions, enrollments, isLive, getToken: getToken, jobRoles, acknowledgments, setAcknowledgments, viewingAs };
 
   return (
     <DataContext.Provider value={ctx}>
@@ -2049,7 +2124,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
                         <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{courseFmt(course)}</div>
                         <div style={{ fontSize: 12, color: C.gray400 }}>
                           {course.durationMin} min
-                          {latest && ` · Score: ${latest.score}%`}
+                          {latest && ` · ${latest.acknowledged ? "Acknowledged" : `Score: ${latest.score}%`}`}
                           {latest?.certExpires && ` · Expires: ${latest.certExpires}`}
                           {failed && !latest && ` · Last attempt: ${failed.score}% (retry required)`}
                         </div>
@@ -2057,7 +2132,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       {(certStatus === "current" || certStatus === "expiring") && latest && (
-                        <button onClick={(e) => { e.stopPropagation(); printCertificate(user.name, course.name, course.code, latest.score, latest.completedDate, latest.certExpires, course.recertDays); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 8px", fontSize: 11, color: C.gold700, borderColor: C.gold500, display: "inline-flex", alignItems: "center", gap: 4 }} title="View Certificate">
+                        <button onClick={(e) => { e.stopPropagation(); printCertificate(user.name, course.name, course.code, latest.acknowledged ? "Acknowledged" : latest.score, latest.completedDate, latest.certExpires, course.recertDays); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 8px", fontSize: 11, color: C.gold700, borderColor: C.gold500, display: "inline-flex", alignItems: "center", gap: 4 }} title="View Certificate">
                           <Icons.Award /> Cert
                         </button>
                       )}
@@ -2122,7 +2197,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
                   <div>
                     <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{courseFmt(course)}</div>
                     <div style={{ fontSize: 12, color: C.gray400 }}>
-                      Last completed: {latest.completedDate} · Score: {latest.score}%
+                      Last completed: {latest.completedDate} · {latest.acknowledged ? "Acknowledged" : `Score: ${latest.score}%`}
                       {latest.certExpires && (
                         <span style={{ color: certStatus === "expired" ? C.error : certStatus === "expiring" ? C.warning : C.success, fontWeight: 600, marginLeft: 6 }}>
                           · {certStatus === "expired" ? `Expired ${latest.certExpires}` : `Expires ${latest.certExpires}`}
@@ -2133,7 +2208,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   {(certStatus === "current" || certStatus === "expiring") && (
-                    <button onClick={(e) => { e.stopPropagation(); printCertificate(user.name, course.name, course.code, latest.score, latest.completedDate, latest.certExpires, course.recertDays); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 8px", fontSize: 11, color: C.gold700, borderColor: C.gold500, display: "inline-flex", alignItems: "center", gap: 4 }} title="View Certificate">
+                    <button onClick={(e) => { e.stopPropagation(); printCertificate(user.name, course.name, course.code, latest.acknowledged ? "Acknowledged" : latest.score, latest.completedDate, latest.certExpires, course.recertDays); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 8px", fontSize: 11, color: C.gold700, borderColor: C.gold500, display: "inline-flex", alignItems: "center", gap: 4 }} title="View Certificate">
                       <Icons.Award /> Cert
                     </button>
                   )}
@@ -2193,7 +2268,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
                         <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{courseFmt(course)}</div>
                         <div style={{ fontSize: 12, color: C.gray400 }}>
                           {course.category} · {course.durationMin} min
-                          {latest && ` · Score: ${latest.score}%`}
+                          {latest && ` · ${latest.acknowledged ? "Acknowledged" : `Score: ${latest.score}%`}`}
                           {failed && !latest && ` · Last attempt: ${failed.score}% (retry required)`}
                         </div>
                       </div>
@@ -2245,11 +2320,11 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
                     <span style={{ color: C.success }}><Icons.Check /></span>
                     <div>
                       <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{courseFmt(course)}</div>
-                      <div style={{ fontSize: 12, color: C.gray400 }}>Completed {latest.completedDate} · Score: {latest.score}%</div>
+                      <div style={{ fontSize: 12, color: C.gray400 }}>Completed {latest.completedDate} · {latest.acknowledged ? "Acknowledged" : `Score: ${latest.score}%`}</div>
                     </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <button onClick={(e) => { e.stopPropagation(); printCertificate(user.name, course.name, course.code, latest.score, latest.completedDate, latest.certExpires, course.recertDays); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 8px", fontSize: 11, color: C.gold700, borderColor: C.gold500, display: "inline-flex", alignItems: "center", gap: 4 }} title="View Certificate">
+                    <button onClick={(e) => { e.stopPropagation(); printCertificate(user.name, course.name, course.code, latest.acknowledged ? "Acknowledged" : latest.score, latest.completedDate, latest.certExpires, course.recertDays); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 8px", fontSize: 11, color: C.gold700, borderColor: C.gold500, display: "inline-flex", alignItems: "center", gap: 4 }} title="View Certificate">
                       <Icons.Award /> Cert
                     </button>
                     <Icons.ChevronRight />
@@ -2268,7 +2343,7 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
 // COURSE VIEW (lessons + quiz launcher)
 // ============================================================
 function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit, onBack, setView, mobile }) {
-  const { courses, lessons: allLessons, quizzes } = useData();
+  const { courses, lessons: allLessons, quizzes, acknowledgments = [], setAcknowledgments, isLive, getToken, viewingAs } = useData();
   const course = courses.find(c => c.id === courseId);
   if (!course) return <div style={{ padding: 40, textAlign: "center", color: C.gray400 }}>Course not found.</div>;
   const lessons = allLessons.filter(l => l.courseId === courseId).sort((a, b) => a.order - b.order);
@@ -2285,6 +2360,81 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
   const myAttempts = completions.filter(c => c.employeeId === user.id && c.courseId === courseId);
   const bestPass = myAttempts.filter(c => c.status === "passed").sort((a, b) => b.score - a.score)[0];
   const allWatched = lessons.length > 0 && lessons.every(l => watchedLessons.has(l.id));
+
+  // ── External courses (AppFolio Academy): open on the provider's site, then sign a
+  //    per-lesson acknowledgment. The signed acknowledgments ARE the completion evidence. ──
+  const isExternal = isExternalCourse(course);
+  const latestPass = myAttempts.filter(c => c.status === "passed").sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
+  // After an expiry or a "requires re-training" update, earlier acknowledgments no longer count.
+  const retrainCutoff = latestPass && getCertStatus(latestPass, course) === "expired" ? latestPass.completedDate : null;
+  const ackByLesson = {};
+  for (const a of acknowledgments) {
+    if (a.employeeId !== user.id || a.courseId !== courseId) continue;
+    if (retrainCutoff && (a.acknowledgedAt || "").slice(0, 10) <= retrainCutoff) continue;
+    if (!ackByLesson[a.lessonId] || (a.acknowledgedAt || "") > (ackByLesson[a.lessonId].acknowledgedAt || "")) ackByLesson[a.lessonId] = a;
+  }
+  const ackedCount = lessons.filter(l => ackByLesson[l.id]).length;
+  const allAcked = lessons.length > 0 && ackedCount === lessons.length;
+  const hasCurrentCompletion = !!latestPass && !retrainCutoff;
+  const launchKey = `ns_launch_${courseId}_${user?.id}`;
+  const [launches, setLaunches] = useState(() => { try { return JSON.parse(sessionStorage.getItem(launchKey) || "{}"); } catch { return {}; } });
+  const [ackChecked, setAckChecked] = useState(false);
+  const [ackSaving, setAckSaving] = useState(false);
+  const [ackError, setAckError] = useState(null);
+  useEffect(() => { setAckChecked(false); setAckError(null); }, [activeLesson?.id]);
+
+  const launchLesson = (lesson) => {
+    if (!lesson.externalUrl) return;
+    // Keep the FIRST open time — it is the start of the training, and it is what gets recorded.
+    const next = { ...launches, [lesson.id]: launches[lesson.id] || new Date().toISOString() };
+    setLaunches(next);
+    try { sessionStorage.setItem(launchKey, JSON.stringify(next)); } catch {}
+    window.open(lesson.externalUrl, "_blank", "noopener");
+  };
+
+  const recordExternalCompletion = async (ackMap) => {
+    const ids = lessons.map(l => ackMap[l.id] && ackMap[l.id].id).filter(Boolean);
+    await onQuizSubmit(user, course, 100, true, JSON.stringify({ type: "acknowledgment", version: ACK_VERSION, acknowledgmentIds: ids }));
+  };
+
+  const signAcknowledgment = async (lesson) => {
+    const launchedAt = launches[lesson.id];
+    if (viewingAs || !launchedAt || !ackChecked) return;
+    setAckSaving(true); setAckError(null);
+    const now = new Date().toISOString();
+    const rec = { employeeId: user.id, courseId, lessonId: lesson.id, version: ACK_VERSION, launchedAt, acknowledgedAt: now };
+    try {
+      if (isLive) {
+        const token = await getToken();
+        const res = await spCreate(token, CONFIG.lists.acknowledgments, {
+          Title: `${user.name} - ${course.code || course.name} - ${lesson.title}`.slice(0, 255),
+          AckEmployeeEmail: user.email,
+          AckEmployeeName: user.name,
+          AckCourseID: parseInt(courseId, 10),
+          AckCourseCode: course.code || "",
+          AckCourseTitle: course.name,
+          AckLessonID: parseInt(lesson.id, 10),
+          AckLessonTitle: lesson.title,
+          AckExternalURL: lesson.externalUrl || "",
+          AckVersion: ACK_VERSION,
+          AckText: ackText(user.name, lesson.title, course, now),
+          LaunchedAt: launchedAt,
+          AcknowledgedAt: now,
+        });
+        rec.id = String(res.id);
+      } else {
+        rec.id = `ack_${Date.now()}`;
+      }
+      const nextMap = { ...ackByLesson, [lesson.id]: rec };
+      setAcknowledgments(prev => [...prev, rec]);
+      const nextLesson = lessons.find(l => l.order > lesson.order && !nextMap[l.id]) || lessons.find(l => !nextMap[l.id]);
+      setActiveLesson(nextLesson || null);
+      if (lessons.every(l => nextMap[l.id]) && !hasCurrentCompletion) await recordExternalCompletion(nextMap);
+    } catch (err) {
+      setAckError("Your acknowledgment was not saved: " + err.message + ". Try again, or tell your manager if it keeps failing.");
+    }
+    setAckSaving(false);
+  };
 
   // Persist watchedLessons to sessionStorage whenever they change
   useEffect(() => {
@@ -2338,7 +2488,8 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
             <div style={{ fontSize: 22, fontWeight: 700, color: C.teal700, marginTop: 8 }}>{courseFmt(course)}</div>
             <div style={{ fontSize: 14, color: C.gray400, marginTop: 4 }}>{course.description}</div>
             <div style={{ fontSize: 13, color: C.gray400, marginTop: 8, display: "flex", gap: 16, flexWrap: "wrap" }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Icons.Clock /> {course.durationMin} min total</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Icons.Clock /> {course.durationMin ? `${course.durationMin} min total` : "Length varies"}</span>
+              {isExternal && <span style={{ display: "flex", alignItems: "center", gap: 4, color: C.gold700, fontWeight: 600 }}>{course.externalProvider || "AppFolio Academy"} · acknowledgment, no quiz</span>}
               <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Icons.Play /> {lessons.length} lessons</span>
               {course.recertDays && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><Icons.RefreshCw /> Recertification: every {course.recertDays} days</span>}
             </div>
@@ -2349,7 +2500,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
             return (
               <div style={{ textAlign: "right" }}>
                 <span style={S.badge(expired ? "error" : "success")}>
-                  {stale ? "UPDATED — RETRAIN" : expired ? "EXPIRED" : `PASSED — ${bestPass.score}%`}
+                  {stale ? "UPDATED — RETRAIN" : expired ? "EXPIRED" : bestPass.acknowledged ? "COMPLETED — ACKNOWLEDGED" : `PASSED — ${bestPass.score}%`}
                 </span>
                 {stale && course.versionNote && (
                   <div style={{ fontSize: 12, color: C.gray400, marginTop: 4, maxWidth: 220 }}>What changed: {course.versionNote}</div>
@@ -2379,8 +2530,65 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
             <div className="ns-lesson-body" style={{ marginBottom: 16, fontSize: 15, lineHeight: 1.7, color: C.gray700 || "#2D3B40" }}
               dangerouslySetInnerHTML={{ __html: activeLesson.body }} />
           )}
+          {/* External lesson — open on the provider's site, then sign the acknowledgment */}
+          {isExternal && (() => {
+            const lesson = activeLesson;
+            const ack = ackByLesson[lesson.id];
+            const launchedAt = launches[lesson.id];
+            const provider = course.externalProvider || "AppFolio Academy";
+            const canSign = !!launchedAt && ackChecked && !viewingAs && !ackSaving;
+            return (
+              <div>
+                <div style={{
+                  background: `linear-gradient(135deg, ${C.headerBg} 0%, #243F4A 100%)`, borderRadius: 6,
+                  padding: mobile ? "24px 18px" : "30px 28px", marginBottom: 16, position: "relative", overflow: "hidden",
+                  display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center",
+                }}>
+                  <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: C.gold500 }} />
+                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: C.gold500, marginBottom: 4 }}>{provider}</div>
+                  <div style={{ fontSize: 15, color: "#FFFFFF", fontWeight: 600, marginBottom: 14 }}>{lesson.title}</div>
+                  {lesson.externalUrl ? (
+                    <button onClick={() => launchLesson(lesson)} style={{
+                      display: "inline-flex", alignItems: "center", gap: 8, padding: "12px 28px", fontSize: 14, fontWeight: 600,
+                      fontFamily: "'Source Sans 3',sans-serif", color: C.headerBg, background: C.gold500, border: "none", borderRadius: 4, cursor: "pointer",
+                    }}>▶ {launchedAt ? "Open Again" : `Open in ${provider}`}</button>
+                  ) : (
+                    <div style={{ fontSize: 13, color: C.teal300 }}>Course link not set yet — tell your administrator.</div>
+                  )}
+                  <div style={{ fontSize: 12, color: "rgba(255,255,255,0.78)", marginTop: 12, lineHeight: 1.5, maxWidth: 520 }}>
+                    Opens in a new tab. Sign in to {provider} with your own login and complete the whole course there{lesson.durationMin ? ` (about ${lesson.durationMin} min)` : ""}.
+                    {launchedAt && <><br />Opened {new Date(launchedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</>}
+                  </div>
+                </div>
+
+                {ack ? (
+                  <div style={{ padding: "14px 16px", background: C.successBg, border: `1px solid ${C.success}40`, borderRadius: 6, marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.success, display: "flex", alignItems: "center", gap: 6 }}><Icons.Check /> Acknowledged {new Date(ack.acknowledgedAt).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</div>
+                    <div style={{ fontSize: 12, color: C.gray400, marginTop: 4 }}>Your signed acknowledgment for this lesson is on file.</div>
+                  </div>
+                ) : (
+                  <div style={{ padding: "16px 18px", background: C.gold50, border: `1px solid ${C.gold100}`, borderRadius: 6 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: C.gold700, marginBottom: 8 }}>Acknowledgment</div>
+                    <div style={{ fontSize: 14, lineHeight: 1.65, color: C.teal700, marginBottom: 14, fontFamily: "Georgia, 'Times New Roman', serif" }}>
+                      {ackText(user.name, lesson.title, course, new Date().toISOString())}
+                    </div>
+                    <label style={{ display: "flex", alignItems: "flex-start", gap: 10, fontSize: 14, color: C.teal700, cursor: launchedAt && !viewingAs ? "pointer" : "not-allowed", opacity: launchedAt && !viewingAs ? 1 : 0.5, marginBottom: 12 }}>
+                      <input type="checkbox" checked={ackChecked} disabled={!launchedAt || !!viewingAs} onChange={e => setAckChecked(e.target.checked)} style={{ marginTop: 3, width: 16, height: 16 }} />
+                      <span>I have read this acknowledgment and I agree to it.</span>
+                    </label>
+                    <button disabled={!canSign} onClick={() => signAcknowledgment(lesson)} style={{ ...S.btnPrimary, opacity: canSign ? 1 : 0.4, cursor: canSign ? "pointer" : "not-allowed" }}>
+                      <Icons.Check /> {ackSaving ? "Saving…" : "Sign Acknowledgment"}
+                    </button>
+                    {!launchedAt && !viewingAs && <div style={{ fontSize: 12, color: C.gray400, marginTop: 8 }}>Open the course first. Signing unlocks once you have opened it.</div>}
+                    {viewingAs && <div style={{ fontSize: 12, color: "#C44B3B", marginTop: 8 }}>You are viewing as another employee. Only the employee can sign their own acknowledgment.</div>}
+                    {ackError && <div style={{ fontSize: 12, color: "#C44B3B", marginTop: 8 }}>{ackError}</div>}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           {/* Video embed */}
-          {activeLesson.videoUrl && (() => {
+          {!isExternal && activeLesson.videoUrl && (() => {
             const url = activeLesson.videoUrl;
             const ytMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&?#]+)/);
             if (ytMatch) return <div style={{ position: "relative", paddingBottom: mobile ? "56.25%" : "50%", height: 0, borderRadius: 6, overflow: "hidden", marginBottom: 16 }}><iframe src={`https://www.youtube.com/embed/${ytMatch[1]}`} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", border: "none" }} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen /></div>;
@@ -2391,7 +2599,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
             return <div style={{ position: "relative", paddingBottom: mobile ? "56.25%" : "50%", height: 0, borderRadius: 6, overflow: "hidden", marginBottom: 16 }}><iframe src={url} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", border: "none" }} allowFullScreen /></div>;
           })()}
           {/* PowerPoint — opens in SharePoint viewer (new tab) */}
-          {activeLesson.documentUrl && (() => {
+          {!isExternal && activeLesson.documentUrl && (() => {
             const url = activeLesson.documentUrl;
             // Convert any embed URL to interactivepreview for best viewing experience
             let viewUrl = url;
@@ -2422,7 +2630,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
             );
           })()}
           {/* No content yet */}
-          {!activeLesson.body && !activeLesson.videoUrl && !activeLesson.documentUrl && (
+          {!isExternal && !activeLesson.body && !activeLesson.videoUrl && !activeLesson.documentUrl && (
             <div style={{
               background: C.dark, borderRadius: 6, height: mobile ? 120 : 180, display: "flex", flexDirection: "column",
               alignItems: "center", justifyContent: "center", color: C.gray300, marginBottom: 16
@@ -2453,6 +2661,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
               ))}
             </div>
           )}
+          {!isExternal && (
           <button
             onClick={() => {
               setWatchedLessons(prev => new Set([...prev, activeLesson.id]));
@@ -2464,6 +2673,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
           >
             <Icons.Check /> Mark Complete {lessons.find(l => l.order === activeLesson.order + 1) ? "& Next Lesson" : ""}
           </button>
+          )}
         </div>
       )}
 
@@ -2471,7 +2681,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
       <div style={S.card}>
         <div style={S.cardTitle}>Course Lessons</div>
         {lessons.map(lesson => {
-          const watched = watchedLessons.has(lesson.id);
+          const watched = isExternal ? !!ackByLesson[lesson.id] : watchedLessons.has(lesson.id);
           const isActive = activeLesson?.id === lesson.id;
           return (
             <div
@@ -2495,12 +2705,14 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{lesson.title}</div>
                 <div style={{ fontSize: 12, color: C.gray400, display: "flex", gap: 10, marginTop: 2 }}>
-                  <span>{lesson.durationMin} min</span>
+                  <span>{lesson.durationMin ? `${lesson.durationMin} min` : "—"}</span>
+                  {isExternal && <span style={{ color: C.gold700 }}>{course.externalProvider || "AppFolio Academy"}</span>}
+                  {isExternal && ackByLesson[lesson.id] && <span style={{ color: C.success }}>Acknowledged {(ackByLesson[lesson.id].acknowledgedAt || "").slice(0, 10)}</span>}
                   {lesson.body && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Doc /> Reading</span>}
                   {lesson.videoUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Play /> Video</span>}
                   {lesson.documentUrl && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Doc /> Slides</span>}
                   {lesson.supplements && lesson.supplements.length > 0 && <span style={{ display: "flex", alignItems: "center", gap: 3 }}><Icons.Download /> {lesson.supplements.length > 1 ? `${lesson.supplements.length} Docs` : "Worksheet"}</span>}
-                  {!lesson.body && !lesson.videoUrl && !lesson.documentUrl && <span style={{ color: C.gold500 }}>Content pending</span>}
+                  {!isExternal && !lesson.body && !lesson.videoUrl && !lesson.documentUrl && <span style={{ color: C.gold500 }}>Content pending</span>}
                 </div>
               </div>
               {isActive ? <span style={{ fontSize: 12, fontWeight: 600, color: C.gold600 }}>PLAYING</span> : <Icons.Play />}
@@ -2509,7 +2721,32 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
         })}
       </div>
 
+      {/* External courses: completion by acknowledgment (no quiz) */}
+      {isExternal && (
+        <div style={{ ...S.card, borderLeft: `4px solid ${allAcked ? C.success : C.gray200}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div style={{ fontSize: 16, fontWeight: 600, color: C.teal700, display: "flex", alignItems: "center", gap: 8 }}>
+                <Icons.Trophy /> Course Completion
+              </div>
+              <div style={{ fontSize: 13, color: C.gray400, marginTop: 4 }}>
+                {hasCurrentCompletion && allAcked
+                  ? `Completed ${latestPass.completedDate}. All ${lessons.length} acknowledgments are on file.`
+                  : allAcked
+                    ? "All lessons acknowledged."
+                    : `${ackedCount} of ${lessons.length} lessons acknowledged. Open each lesson, complete it on ${course.externalProvider || "AppFolio Academy"}, then sign its acknowledgment.`}
+              </div>
+              <div style={{ marginTop: 10, maxWidth: 360 }}><ProgressBar pct={lessons.length ? Math.round((ackedCount / lessons.length) * 100) : 0} /></div>
+            </div>
+            {allAcked && !hasCurrentCompletion && !viewingAs && (
+              <button style={S.btnPrimary} onClick={() => recordExternalCompletion(ackByLesson)}><Icons.Check /> Record Completion</button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Quiz section */}
+      {!isExternal && (
       <div style={{ ...S.card, borderLeft: `4px solid ${allWatched ? C.success : C.gray200}` }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
           <div>
@@ -2552,6 +2789,7 @@ function CourseView({ courseId, user, completions, setCompletions, onQuizSubmit,
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
@@ -3060,7 +3298,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                       <div>
                         <div style={{ fontSize: 13, fontWeight: 500, color: C.teal700 }}>{courseFmt(cs.course)}</div>
                         <div style={{ fontSize: 12, color: C.gray400 }}>
-                          {cs.completion ? `${cs.completion.score}% · ${cs.completion.completedDate}` : "Not started"}
+                          {cs.completion ? `${scoreText(cs.completion)} · ${cs.completion.completedDate}` : "Not started"}
                           {cs.completion?.certExpires && ` · Exp: ${cs.completion.certExpires}`}
                         </div>
                         {cs.dueDate && (
@@ -3093,7 +3331,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                         <tr key={cs.course.id}>
                           <td style={{ ...S.td, fontSize: 13, fontWeight: 500 }}>{courseFmt(cs.course)}</td>
                           <td style={{ ...S.td, fontSize: 13 }}>{cs.course.category}</td>
-                          <td style={{ ...S.td, fontSize: 13 }}>{cs.completion ? `${cs.completion.score}%` : "—"}</td>
+                          <td style={{ ...S.td, fontSize: 13 }}>{cs.completion ? scoreText(cs.completion) : "—"}</td>
                           <td style={{ ...S.td, fontSize: 13 }}>{cs.completion?.completedDate || "—"}</td>
                           <td style={{ ...S.td, fontSize: 13 }}>{cs.completion?.certExpires || "N/A"}</td>
                           <td style={{ ...S.td, fontSize: 13, color: isOverdue ? C.error : cs.dueDate ? C.warning : C.gray400, fontWeight: cs.dueDate ? 600 : 400 }}>{cs.dueDate || "—"}</td>
@@ -3128,7 +3366,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                               <div style={{ fontSize: 13, fontWeight: 500, color: C.teal600 }}>{courseFmt(course)}</div>
                               <div style={{ fontSize: 12, color: C.gray400 }}>
                                 {course.category} · Enrolled {enrollment.enrolledDate}
-                                {latest && ` · Score: ${latest.score}%`}
+                                {latest && ` · ${latest.acknowledged ? "Acknowledged" : `Score: ${latest.score}%`}`}
                               </div>
                             </div>
                             {certBadge(status)}
@@ -3189,7 +3427,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                 name: emp.name, email: emp.email, role: emp.role, hireDate: emp.hireDate, active: emp.active ? "Active" : "Inactive",
                 courseCode: course.code, courseName: course.name, category: course.category, type: "Required",
                 status: certStatus === "current" ? "Complete" : certStatus === "expiring" ? "Expiring" : certStatus === "expired" ? "Expired" : "Incomplete",
-                score: latest ? latest.score : "", completedDate: latest?.completedDate || "", expires: latest?.certExpires || "",
+                score: latest ? (latest.acknowledged ? "Acknowledged" : latest.score) : "", completedDate: latest?.completedDate || "", expires: latest?.certExpires || "",
                 dueDate: dueDate || "", attempts: passed.length + failed.length,
               });
             }
@@ -3202,7 +3440,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
               rows.push({
                 name: emp.name, email: emp.email, role: emp.role, hireDate: emp.hireDate, active: emp.active ? "Active" : "Inactive",
                 courseCode: course.code, courseName: course.name, category: course.category, type: "Voluntary",
-                status: "Complete", score: comp.score, completedDate: comp.completedDate, expires: comp.certExpires || "",
+                status: "Complete", score: comp.acknowledged ? "Acknowledged" : comp.score, completedDate: comp.completedDate, expires: comp.certExpires || "",
                 dueDate: "", attempts: 1,
               });
             }
@@ -3286,7 +3524,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                           <td style={{ ...S.td, fontSize: 12 }}>{r.courseCode ? `${r.courseCode} — ${r.courseName}` : r.courseName}</td>
                           <td style={{ ...S.td, fontSize: 12 }}><span style={r.type === "Required" ? S.badge("warning") : S.badge("info")}>{r.type}</span></td>
                           <td style={{ ...S.td, fontSize: 12 }}><span style={S.badge(r.status === "Complete" ? "success" : r.status === "Expired" ? "error" : r.status === "Expiring" ? "warning" : "neutral")}>{r.status}</span></td>
-                          <td style={{ ...S.td, fontSize: 12 }}>{r.score || "—"}{r.score ? "%" : ""}</td>
+                          <td style={{ ...S.td, fontSize: 12 }}>{r.score || "—"}{typeof r.score === "number" && r.score ? "%" : ""}</td>
                           <td style={{ ...S.td, fontSize: 12 }}>{r.completedDate || "—"}</td>
                           <td style={{ ...S.td, fontSize: 12 }}>{r.expires || "—"}</td>
                           <td style={{ ...S.td, fontSize: 12, color: isOverdue ? C.error : C.gray600, fontWeight: isOverdue ? 600 : 400 }}>{r.dueDate || "—"}</td>
@@ -3576,7 +3814,7 @@ function TrainingLibraryView({ user, completions, enrollments, assignments, onEn
                 <div style={{ padding: "10px 14px", background: C.successBg, border: `1px solid rgba(45,138,90,0.25)`, borderRadius: 6, marginBottom: 8, display: "flex", alignItems: "flex-start", gap: 8 }}>
                   <Icons.Check />
                   <div style={{ fontSize: 13, color: C.success, fontWeight: 500 }}>
-                    {selectedEmpData?.name} has already passed this course (Score: {latestPass?.score}% on {latestPass?.completedDate}). Assigning will require a retake.
+                    {selectedEmpData?.name} has already completed this course ({latestPass?.acknowledged ? "Acknowledged" : `Score: ${latestPass?.score}%`} on {latestPass?.completedDate}). Assigning will require a retake.
                   </div>
                 </div>
               )}
@@ -3708,7 +3946,7 @@ function CourseForm({ item, onClose }) {
   // existing off-list value stays visible and removable rather than vanishing.
   const staleRoles = (item?.roles || []).filter(r => !jobRoles.includes(r));
   const allRoles = [...jobRoles, ...staleRoles];
-  const [form, setForm] = useState({ name: item?.name || "", code: item?.code || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999, status: item?.status || "Active", roles: item?.roles || [], prereq: item?.prereq || "" });
+  const [form, setForm] = useState({ name: item?.name || "", code: item?.code || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999, status: item?.status || "Active", roles: item?.roles || [], prereq: item?.prereq || "", courseType: item?.courseType || "Internal", externalProvider: item?.externalProvider || "" });
   const [saving, setSaving] = useState(false);
   const [versionNote, setVersionNote] = useState("");
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -3793,6 +4031,12 @@ function CourseForm({ item, onClose }) {
     const needsActivatedDate = form.status === "Active" && (!isEdit || !item.activatedDate);
     setSaving(true);
     const fields = { Title: form.name.trim(), CourseCode: form.code.trim(), CourseDescription: form.description, Category: form.category, DurationMin: parseInt(form.durationMin,10)||0, RecertDays: parseInt(form.recertDays,10)||0, PassingScore: parseInt(form.passingScore,10)||80, SortOrder: parseInt(form.sortOrder,10)||999, CourseActive: form.status !== "Archived", CourseStatus: form.status, CourseRoles: form.roles.join(","), PrerequisiteCourseCode: (form.prereq || "").trim() };
+    // Only write the External columns when they are in use, so saving a normal course never
+    // depends on the provision-appfolio-academy-courses.ps1 columns existing.
+    if (form.courseType === "External" || (isEdit && item.courseType === "External")) {
+      fields.CourseType = form.courseType;
+      fields.ExternalProvider = form.courseType === "External" ? (form.externalProvider || "AppFolio Academy").trim() : "";
+    }
     if (needsActivatedDate) fields.ActivatedDate = new Date().toISOString();
     try {
       if (isLive) {
@@ -3800,11 +4044,11 @@ function CourseForm({ item, onClose }) {
         if (isEdit) {
           await spUpdate(token, CONFIG.lists.courses, item.id, fields);
           const activatedDate = needsActivatedDate ? new Date().toISOString().split("T")[0] : item.activatedDate;
-          setCourses(prev => prev.map(c => c.id === item.id ? { ...c, name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, activatedDate } : c));
+          setCourses(prev => prev.map(c => c.id === item.id ? { ...c, name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, prereq: fields.PrerequisiteCourseCode, courseType: form.courseType, externalProvider: fields.ExternalProvider || "", activatedDate } : c));
           // Fire go-live notifications if status changed from Coming Soon → Active
           if (goingLive) { sendGoLiveNotifications(token, item.id, fields.Title).catch(e => console.error("Go-live notifications failed:", e)); }
         }
-        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, activatedDate: needsActivatedDate ? new Date().toISOString().split("T")[0] : null, version: 1, reqVersion: 1 }].sort((a,b) => a.sortOrder - b.sortOrder)); }
+        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, prereq: fields.PrerequisiteCourseCode, courseType: form.courseType, externalProvider: fields.ExternalProvider || "", activatedDate: needsActivatedDate ? new Date().toISOString().split("T")[0] : null, version: 1, reqVersion: 1 }].sort((a,b) => a.sortOrder - b.sortOrder)); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
@@ -3848,6 +4092,17 @@ function CourseForm({ item, onClose }) {
             .map(c => <option key={c.id} value={c.code}>{courseFmt(c)}</option>)}
         </select>
       </FormField></FormRow>
+      <FormRow>
+        <FormField label="Course Type" hint="External = taught on another platform (AppFolio Academy). Learners open each lesson there and sign an acknowledgment. No quiz.">
+          <select style={S.select} value={form.courseType} onChange={e => set("courseType", e.target.value)}>
+            <option value="Internal">Internal (NewShire content + quiz)</option>
+            <option value="External">External (acknowledgment, no quiz)</option>
+          </select>
+        </FormField>
+        {form.courseType === "External"
+          ? <FormField label="External Provider"><input style={S.input} value={form.externalProvider} onChange={e => set("externalProvider", e.target.value)} placeholder="AppFolio Academy" /></FormField>
+          : <div />}
+      </FormRow>
         <FormField label="Status">{wasComingSoon && form.status === "Active" && <div style={{fontSize:12,color:C.gold500,marginBottom:4}}>Changing to Active will notify all pre-registered employees and those with this course in their learning path.</div>}<select style={S.select} value={form.status} onChange={e => set("status", e.target.value)}><option value="Active">Active</option><option value="Coming Soon">Coming Soon</option><option value="Archived">Archived</option></select></FormField>
       <FormField label="Role Restrictions" hint={form.roles.length === 0 ? "No restrictions \u2014 all roles will see this course" : `${form.roles.length} role${form.roles.length > 1 ? "s" : ""} selected \u2014 only these roles will see this course in their learning path`}>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:4}}>
@@ -3981,7 +4236,7 @@ function LessonForm({ item, courseId, onClose }) {
     if (item?.supplements && item.supplements.length > 0) return item.supplements.map(s => ({...s}));
     return [];
   };
-  const [form, setForm] = useState({ title: item?.title||"", courseId: item?.courseId||courseId||"", order: item?.order||(lessons.filter(l=>l.courseId===(item?.courseId||courseId)).length+1), durationMin: item?.durationMin||10, body: item?.body||"", videoUrl: item?.videoUrl||"", documentUrl: item?.documentUrl||"", documentTitle: item?.documentTitle||"" });
+  const [form, setForm] = useState({ title: item?.title||"", courseId: item?.courseId||courseId||"", order: item?.order||(lessons.filter(l=>l.courseId===(item?.courseId||courseId)).length+1), durationMin: item?.durationMin||10, body: item?.body||"", videoUrl: item?.videoUrl||"", documentUrl: item?.documentUrl||"", documentTitle: item?.documentTitle||"", externalUrl: item?.externalUrl||"" });
   const [supplements, setSupplements] = useState(initSupplements);
   const [videoUploadPct, setVideoUploadPct] = useState(null); // null = not uploading, 0-100 = progress
   const videoFileInputRef = useRef(null);
@@ -4023,6 +4278,8 @@ function LessonForm({ item, courseId, onClose }) {
     setSaving(true);
     const fields = { Title: form.title.trim(), CourseIDLookupId: parseInt(form.courseId,10), LessonSortOrder: parseInt(form.order,10)||1, LessonDurationMin: parseInt(form.durationMin,10)||0, LessonBody: form.body || "", DocumentTitle: form.documentTitle || "" };
     if (form.videoUrl.trim()) fields.VideoURL = form.videoUrl.trim();
+    // External lessons only — skip the column entirely otherwise (it may not exist on older sites)
+    if (form.externalUrl.trim() || item?.externalUrl) fields.ExternalURL = form.externalUrl.trim();
     if (form.documentUrl.trim()) {
       let cleanUrl = form.documentUrl.trim();
       const srcMatch = cleanUrl.match(/src=["']([^"']+)["']/);
@@ -4042,7 +4299,7 @@ function LessonForm({ item, courseId, onClose }) {
     try {
       if (isLive) {
         const token = await getToken();
-        const lessonData = { title: fields.Title, courseId: String(fields.CourseIDLookupId), order: fields.LessonSortOrder, durationMin: fields.LessonDurationMin, body: form.body || "", videoUrl: form.videoUrl || null, documentUrl: form.documentUrl || null, documentTitle: form.documentTitle || null, supplements: validSupps };
+        const lessonData = { externalUrl: form.externalUrl.trim() || null, title: fields.Title, courseId: String(fields.CourseIDLookupId), order: fields.LessonSortOrder, durationMin: fields.LessonDurationMin, body: form.body || "", videoUrl: form.videoUrl || null, documentUrl: form.documentUrl || null, documentTitle: form.documentTitle || null, supplements: validSupps };
         if (isEdit) { await spUpdate(token, CONFIG.lists.lessons, item.id, fields); setLessons(prev => prev.map(l => l.id === item.id ? { ...l, ...lessonData } : l).sort((a, b) => a.order - b.order)); }
         else { const res = await spCreate(token, CONFIG.lists.lessons, fields); setLessons(prev => [...prev, { id: String(res.id), ...lessonData }].sort((a, b) => a.order - b.order)); }
       }
@@ -4083,6 +4340,11 @@ function LessonForm({ item, courseId, onClose }) {
           </div>
         )}
       </FormField>
+      {(courses.find(c => c.id === form.courseId) || {}).courseType === "External" && (
+        <FormField label="External Course URL" hint="The provider's course page, e.g. https://training.appfolio.com/path/<path>/<course>. Learners open it in a new tab, then sign an acknowledgment.">
+          <input style={S.input} type="url" value={form.externalUrl} onChange={e => set("externalUrl", e.target.value)} placeholder="https://training.appfolio.com/..." />
+        </FormField>
+      )}
       <FormField label="Video URL" hint="Optional — upload a video file, or paste a YouTube, Vimeo, SharePoint Stream, or direct video link">
         <input style={S.input} type="url" value={form.videoUrl} onChange={e => set("videoUrl", e.target.value)} placeholder="https://..." />
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
