@@ -346,6 +346,8 @@ function normalizeCourses(items) {
         // acknowledgment instead of a quiz. Blank/"Internal" = normal course.
         courseType: (f.CourseType || "Internal").trim() || "Internal",
         externalProvider: f.ExternalProvider || "",
+        // Opened to pre-hires (StartDate still in the future) as optional get-ahead work.
+        prehire: f.PrehireAvailable === true,
         createdDate: item.createdDateTime ? item.createdDateTime.split("T")[0] : null,
         activatedDate: f.ActivatedDate ? f.ActivatedDate.split("T")[0] : null,
         // Content versioning: `version` = current content version; `reqVersion` = the minimum
@@ -1311,6 +1313,17 @@ function isTrainingExempt(employee) {
   return (employee.role || "").toLowerCase().includes("owner");
 }
 
+// Pre-hire = has an account and an Employees row, but StartDate is still ahead.
+// They see only courses flagged Prehire Available, all optional, and stay out of
+// compliance until Day 1. Completions they earn count toward their real paths.
+function isPreHire(employee) {
+  return !!(employee && employee.hireDate && employee.hireDate > TODAY);
+}
+
+function getPrehireCourses(courses, employee) {
+  return courses.filter(c => c.prehire && c.status === "Active" && courseMatchesRole(c, employee.role));
+}
+
 function getEmployeePaths(employee, learningPaths) {
   return learningPaths.filter(p =>
     p.roles.includes("All") || p.roles.includes(employee.role)
@@ -1749,13 +1762,15 @@ function App() {
   const effectiveUser = (realIsAdmin && viewAsId) ? (employees.find(e => e.id === viewAsId) || currentUser) : currentUser;
   const viewingAs = effectiveUser.id !== currentUser.id;
   const { isAdmin, isManager, subordinateIds } = getUserAccess(effectiveUser, employees);
-  const showComplianceDashboard = isAdmin || isManager;
+  // A pre-hire only ever gets the optional prehire list — no library, no team views.
+  const preHire = isPreHire(effectiveUser);
+  const showComplianceDashboard = !preHire && (isAdmin || isManager);
 
   const TABS = [];
   TABS.push("My Training");
   if (showComplianceDashboard) TABS.push("Team Compliance");
-  TABS.push("Training Library");
-  if (isAdmin) TABS.push("Manage");
+  if (!preHire) TABS.push("Training Library");
+  if (isAdmin && !preHire) TABS.push("Manage");
   const activeTabName = TABS[tab] || TABS[0];
 
   const complianceEmployeeIds = isAdmin
@@ -1865,9 +1880,15 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
   const [collapsedPaths, setCollapsedPaths] = useState([]);
   const [showCompleted, setShowCompleted] = useState(false); // Completed (non-recert) section collapsed by default
 
+  // Pre-hires can only open courses flagged for them.
+  const preHire = isPreHire(user);
+  const viewAllowed = !preHire || !view?.courseId || getPrehireCourses(courses, user).some(c => c.id === view.courseId);
+
   // Sub-views
-  if (view?.type === "course") return <CourseView courseId={view.courseId} user={user} completions={completions} setCompletions={setCompletions} onQuizSubmit={onQuizSubmit} onBack={() => setView(null)} setView={setView} mobile={mobile} />;
-  if (view?.type === "quiz") return <QuizView courseId={view.courseId} user={user} completions={completions} setCompletions={setCompletions} onQuizSubmit={onQuizSubmit} onBack={() => setView({ type: "course", courseId: view.courseId })} />;
+  if (view?.type === "course" && viewAllowed) return <CourseView courseId={view.courseId} user={user} completions={completions} setCompletions={setCompletions} onQuizSubmit={onQuizSubmit} onBack={() => setView(null)} setView={setView} mobile={mobile} />;
+  if (view?.type === "quiz" && viewAllowed) return <QuizView courseId={view.courseId} user={user} completions={completions} setCompletions={setCompletions} onQuizSubmit={onQuizSubmit} onBack={() => setView({ type: "course", courseId: view.courseId })} />;
+
+  if (preHire) return <PreHireView user={user} completions={completions} setView={setView} />;
 
   const paths = getEmployeePaths(user, learningPaths);
   const expiredCerts = [];
@@ -2335,6 +2356,79 @@ function MyTrainingView({ user, completions, setCompletions, enrollments, assign
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================================
+// PRE-HIRE VIEW — optional get-ahead courses before StartDate
+// ============================================================
+function PreHireView({ user, completions, setView }) {
+  const { courses } = useData();
+  const myCompletions = completions.filter(c => c.employeeId === user.id);
+  const list = getPrehireCourses(courses, user);
+  const startLabel = new Date(user.hireDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  const doneCount = list.filter(c => {
+    const latest = myCompletions.filter(x => x.courseId === c.id && x.status === "passed").sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
+    return getCertStatus(latest, c) !== "incomplete";
+  }).length;
+
+  return (
+    <div>
+      <div style={{ ...S.card, borderLeft: `4px solid ${C.gold500}`, background: C.teal50 }}>
+        <div style={{ fontSize: 18, fontWeight: 600, color: C.teal700, marginBottom: 6 }}>Welcome to NewShire, {user.name.split(" ")[0]}!</div>
+        <div style={{ fontSize: 14, color: C.gray600, lineHeight: 1.5 }}>
+          Your first day is <strong>{startLabel}</strong>. If you'd like to get a head start, the courses below are open to you now.
+          They're completely <strong>optional</strong>. Nothing is due before you start. Anything you finish now counts toward your onboarding, so you won't have to repeat it.
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontSize: 17, fontWeight: 600, color: C.teal700, display: "flex", alignItems: "center", gap: 8 }}>
+            <Icons.BookOpen /> Get a Head Start
+          </div>
+          {list.length > 0 && <span style={S.badge(doneCount === list.length ? "success" : "info")}>{doneCount}/{list.length} Complete</span>}
+        </div>
+        {list.length === 0 ? (
+          <div style={{ fontSize: 14, color: C.gray400, padding: "8px 0" }}>
+            No pre-hire courses are available right now. Your training will be here on your first day.
+          </div>
+        ) : list.map(course => {
+          const latest = myCompletions.filter(c => c.courseId === course.id && c.status === "passed").sort((a, b) => b.completedDate.localeCompare(a.completedDate))[0];
+          const certStatus = getCertStatus(latest, course);
+          const lock = prereqState(course, courses, completions, user.id);
+          return (
+            <div
+              key={course.id}
+              onClick={() => !lock.locked && setView({ type: "course", courseId: course.id })}
+              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderBottom: `1px solid ${C.gray100}`, cursor: lock.locked ? "default" : "pointer", borderRadius: 4, opacity: lock.locked ? 0.55 : 1 }}
+              onMouseEnter={e => { if (!lock.locked) e.currentTarget.style.background = C.teal50; }}
+              onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {certStatus === "incomplete" ? <span style={{ color: C.gray300 }}>○</span> : <span style={{ color: C.success }}><Icons.Check /></span>}
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 500, color: C.teal700 }}>{courseFmt(course)}</div>
+                  <div style={{ fontSize: 12, color: C.gray400 }}>
+                    {course.durationMin} min
+                    {latest && ` · ${latest.acknowledged ? "Acknowledged" : `Score: ${latest.score}%`}`}
+                    {lock.locked && lock.prereq && (lock.prereq.prehire ? ` · Complete ${courseFmt(lock.prereq)} first` : ` · Requires ${courseFmt(lock.prereq)}, available after you start`)}
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {certStatus !== "incomplete" && latest && (
+                  <button onClick={(e) => { e.stopPropagation(); printCertificate(user.name, course.name, course.code, latest.acknowledged ? "Acknowledged" : latest.score, latest.completedDate, latest.certExpires, course.recertDays); }} style={{ ...S.btnSecondary, ...S.btnSmall, padding: "3px 8px", fontSize: 11, color: C.gold700, borderColor: C.gold500, display: "inline-flex", alignItems: "center", gap: 4 }} title="View Certificate">
+                    <Icons.Award /> Cert
+                  </button>
+                )}
+                {!lock.locked && <Icons.ChevronRight />}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -3050,7 +3144,8 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
     // course purge left their path pointing at deleted/Coming-Soon courses) — that's "nothing to
     // measure", not "fully compliant", so it must not fall back to 100%.
     const compliancePct = applicableCount > 0 ? Math.round((completed / applicableCount) * 100) : null;
-    const overallStatus = applicableCount === 0 ? "no-requirements" : expired > 0 || overduePaths.length > 0 ? "non-compliant" : missing > 0 ? "in-progress" : expiring > 0 || dueSoonPaths.length > 0 ? "expiring" : "compliant";
+    // Pre-hires have nothing due yet; any early progress still shows in the bar.
+    const overallStatus = isPreHire(emp) ? "pre-hire" : applicableCount === 0 ? "no-requirements" : expired > 0 || overduePaths.length > 0 ? "non-compliant" : missing > 0 ? "in-progress" : expiring > 0 || dueSoonPaths.length > 0 ? "expiring" : "compliant";
 
     // Find who this person reports to for context (reportsTo can be ID or email)
     const manager = employees.find(e => e.id === emp.reportsTo || e.email === emp.reportsTo);
@@ -3065,6 +3160,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
     if (filterStatus === "In Progress" && m.overallStatus !== "in-progress") return false;
     if (filterStatus === "Expiring" && m.overallStatus !== "expiring") return false;
     if (filterStatus === "No Requirements" && m.overallStatus !== "no-requirements") return false;
+    if (filterStatus === "Pre-hire" && m.overallStatus !== "pre-hire") return false;
     return true;
   });
 
@@ -3073,11 +3169,12 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
   const nonCompliant = matrix.filter(m => m.overallStatus === "non-compliant").length;
   const expiringSoon = matrix.filter(m => m.overallStatus === "expiring").length;
   const noRequirements = matrix.filter(m => m.overallStatus === "no-requirements").length;
-  const applicableEmployees = totalEmployees - noRequirements;
+  const preHires = matrix.filter(m => m.overallStatus === "pre-hire").length;
+  const applicableEmployees = totalEmployees - noRequirements - preHires;
 
   const statusBadge = (status) => {
-    const map = { "compliant": "success", "non-compliant": "error", "in-progress": "warning", "expiring": "info", "no-requirements": "neutral" };
-    const labels = { "compliant": "COMPLIANT", "non-compliant": "NON-COMPLIANT", "in-progress": "IN PROGRESS", "expiring": "EXPIRING SOON", "no-requirements": "NO REQUIREMENTS" };
+    const map = { "compliant": "success", "non-compliant": "error", "in-progress": "warning", "expiring": "info", "no-requirements": "neutral", "pre-hire": "info" };
+    const labels = { "compliant": "COMPLIANT", "non-compliant": "NON-COMPLIANT", "in-progress": "IN PROGRESS", "expiring": "EXPIRING SOON", "no-requirements": "NO REQUIREMENTS", "pre-hire": "PRE-HIRE" };
     return <span style={S.badge(map[status])}>{labels[status]}</span>;
   };
 
@@ -3091,7 +3188,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
   // incomplete/expired required courses (with due dates). Interim until the M365 migration.
   const sendComplianceReminders = async () => {
     if (EMAIL_PAUSED) { alert("Emails are currently PAUSED. Go to Manage → Settings to re-enable, then try again."); return; }
-    const targets = matrix.filter(m => m.emp.email && (m.missing > 0 || m.expired > 0));
+    const targets = matrix.filter(m => m.emp.email && m.overallStatus !== "pre-hire" && (m.missing > 0 || m.expired > 0));
     if (targets.length === 0) { alert("Everyone in view has their required training complete — no reminders to send."); return; }
     if (!confirm(`Send a compliance reminder email to ${targets.length} employee${targets.length > 1 ? "s" : ""} with incomplete or expired required training?`)) return;
     setSending(true); setSendResult(null);
@@ -3190,6 +3287,11 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
             Excludes {noRequirements} employee{noRequirements > 1 ? "s" : ""} with no active required courses assigned yet.
           </div>
         )}
+        {preHires > 0 && (
+          <div style={{ fontSize: 12, color: C.gray400, marginTop: noRequirements > 0 ? 2 : 8 }}>
+            Excludes {preHires} pre-hire{preHires > 1 ? "s" : ""} who {preHires > 1 ? "haven't" : "hasn't"} started yet.
+          </div>
+        )}
         {isAdmin && (
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.gray100}` }}>
             <button onClick={sendComplianceReminders} disabled={sending} style={{ ...S.btnPrimary, ...S.btnSmall, opacity: sending ? 0.6 : 1 }}>
@@ -3218,7 +3320,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
             <div>
               <label style={{ ...S.label, fontSize: 12 }}>Status</label>
               <select style={{ ...S.select, width: "auto", minWidth: 160 }} value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
-                {["All", "Compliant", "Non-Compliant", "In Progress", "Expiring", "No Requirements"].map(s => <option key={s} value={s}>{s}</option>)}
+                {["All", "Compliant", "Non-Compliant", "In Progress", "Expiring", "No Requirements", "Pre-hire"].map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
           </div>
@@ -3241,7 +3343,7 @@ function ComplianceDashboard({ completions, enrollments, visibleEmployeeIds, isA
                 <div>
                   <div style={{ fontSize: 14, fontWeight: 600, color: C.teal700 }}>{m.emp.name}</div>
                   <div style={{ fontSize: 12, color: C.gray400 }}>
-                    {m.emp.role} · Hired {m.emp.hireDate}
+                    {m.emp.role} · {isPreHire(m.emp) ? "Starts" : "Hired"} {m.emp.hireDate}
                     {m.manager && ` · Reports to ${m.manager.name}`}
                   </div>
                 </div>
@@ -3946,7 +4048,7 @@ function CourseForm({ item, onClose }) {
   // existing off-list value stays visible and removable rather than vanishing.
   const staleRoles = (item?.roles || []).filter(r => !jobRoles.includes(r));
   const allRoles = [...jobRoles, ...staleRoles];
-  const [form, setForm] = useState({ name: item?.name || "", code: item?.code || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999, status: item?.status || "Active", roles: item?.roles || [], prereq: item?.prereq || "", courseType: item?.courseType || "Internal", externalProvider: item?.externalProvider || "" });
+  const [form, setForm] = useState({ name: item?.name || "", code: item?.code || "", description: item?.description || "", category: item?.category || "Onboarding", durationMin: item?.durationMin || 30, recertDays: item?.recertDays || "", passingScore: item?.passingScore || CONFIG.passingScore, sortOrder: item?.sortOrder || 999, status: item?.status || "Active", roles: item?.roles || [], prereq: item?.prereq || "", courseType: item?.courseType || "Internal", externalProvider: item?.externalProvider || "", prehire: !!item?.prehire });
   const [saving, setSaving] = useState(false);
   const [versionNote, setVersionNote] = useState("");
   const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -4037,6 +4139,9 @@ function CourseForm({ item, onClose }) {
       fields.CourseType = form.courseType;
       fields.ExternalProvider = form.courseType === "External" ? (form.externalProvider || "AppFolio Academy").trim() : "";
     }
+    // Same idea: only touch PrehireAvailable once someone has used it, so saves never
+    // depend on ensure-prehire-column.ps1 having been run.
+    if (form.prehire || (isEdit && item.prehire)) fields.PrehireAvailable = !!form.prehire;
     if (needsActivatedDate) fields.ActivatedDate = new Date().toISOString();
     try {
       if (isLive) {
@@ -4044,11 +4149,11 @@ function CourseForm({ item, onClose }) {
         if (isEdit) {
           await spUpdate(token, CONFIG.lists.courses, item.id, fields);
           const activatedDate = needsActivatedDate ? new Date().toISOString().split("T")[0] : item.activatedDate;
-          setCourses(prev => prev.map(c => c.id === item.id ? { ...c, name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, prereq: fields.PrerequisiteCourseCode, courseType: form.courseType, externalProvider: fields.ExternalProvider || "", activatedDate } : c));
+          setCourses(prev => prev.map(c => c.id === item.id ? { ...c, name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, prereq: fields.PrerequisiteCourseCode, courseType: form.courseType, externalProvider: fields.ExternalProvider || "", prehire: !!form.prehire, activatedDate } : c));
           // Fire go-live notifications if status changed from Coming Soon → Active
           if (goingLive) { sendGoLiveNotifications(token, item.id, fields.Title).catch(e => console.error("Go-live notifications failed:", e)); }
         }
-        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, prereq: fields.PrerequisiteCourseCode, courseType: form.courseType, externalProvider: fields.ExternalProvider || "", activatedDate: needsActivatedDate ? new Date().toISOString().split("T")[0] : null, version: 1, reqVersion: 1 }].sort((a,b) => a.sortOrder - b.sortOrder)); }
+        else { const res = await spCreate(token, CONFIG.lists.courses, fields); setCourses(prev => [...prev, { id: String(res.id), name: fields.Title, code: fields.CourseCode, description: fields.CourseDescription, category: fields.Category, durationMin: fields.DurationMin, recertDays: fields.RecertDays||null, passingScore: fields.PassingScore, sortOrder: fields.SortOrder, status: fields.CourseStatus, roles: form.roles, prereq: fields.PrerequisiteCourseCode, courseType: form.courseType, externalProvider: fields.ExternalProvider || "", prehire: !!form.prehire, activatedDate: needsActivatedDate ? new Date().toISOString().split("T")[0] : null, version: 1, reqVersion: 1 }].sort((a,b) => a.sortOrder - b.sortOrder)); }
       }
       onClose();
     } catch (err) { alert("Save failed: " + err.message); }
@@ -4103,6 +4208,12 @@ function CourseForm({ item, onClose }) {
           ? <FormField label="External Provider"><input style={S.input} value={form.externalProvider} onChange={e => set("externalProvider", e.target.value)} placeholder="AppFolio Academy" /></FormField>
           : <div />}
       </FormRow>
+      <FormField label="Pre-hire Access" hint="New hires can take this before their start date. Always optional for them. It counts toward their learning path once they start.">
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: C.teal700, cursor: "pointer" }}>
+          <input type="checkbox" checked={form.prehire} onChange={e => set("prehire", e.target.checked)} />
+          Available to pre-hires
+        </label>
+      </FormField>
         <FormField label="Status">{wasComingSoon && form.status === "Active" && <div style={{fontSize:12,color:C.gold500,marginBottom:4}}>Changing to Active will notify all pre-registered employees and those with this course in their learning path.</div>}<select style={S.select} value={form.status} onChange={e => set("status", e.target.value)}><option value="Active">Active</option><option value="Coming Soon">Coming Soon</option><option value="Archived">Archived</option></select></FormField>
       <FormField label="Role Restrictions" hint={form.roles.length === 0 ? "No restrictions \u2014 all roles will see this course" : `${form.roles.length} role${form.roles.length > 1 ? "s" : ""} selected \u2014 only these roles will see this course in their learning path`}>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:4}}>
@@ -4949,6 +5060,7 @@ function ManageView({ mobile }) {
                     {course.code && <span style={{ fontSize: 12, fontWeight: 600, color: C.gold500 }}>{course.code}</span>}
                     <span style={{ fontSize: 14, fontWeight: 600, color: C.teal700 }}>{courseFmt(course)}</span>
                     <span style={S.badge(statusBadge)}>{course.status}</span>
+                    {course.prehire && <span style={S.badge("info")}>Pre-hire</span>}
                   </div>
                   <div style={{ fontSize: 13, color: C.gray400, marginTop: 2 }}>{course.category} \u00b7 {course.durationMin} min \u00b7 {cLessons.length} lessons \u00b7 {cQuiz.length} quiz Qs</div>
                   <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
@@ -4982,7 +5094,7 @@ function ManageView({ mobile }) {
                     <tr key={course.id} style={{ cursor: "pointer", opacity: course.status === "Archived" ? 0.5 : 1 }} onClick={() => setExpandedCourse(course)}>
                       <td style={{ ...S.td, fontWeight: 500, color: C.gold500, whiteSpace: "nowrap", fontSize: 12 }}>{course.code || "\u2014"}</td>
                       <td style={{ ...S.td, fontWeight: 500, color: C.teal700 }}>{courseFmt(course)}</td>
-                      <td style={S.td}><span style={S.badge(statusBadge)}>{course.status}</span></td>
+                      <td style={S.td}><span style={S.badge(statusBadge)}>{course.status}</span>{course.prehire && <span style={{ ...S.badge("info"), marginLeft: 6 }}>Pre-hire</span>}</td>
                       <td style={S.td}>{course.category}</td>
                       <td style={S.td}>{course.durationMin} min</td>
                       <td style={S.td}>{cLessons.length}</td>

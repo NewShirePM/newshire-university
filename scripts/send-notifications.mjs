@@ -157,6 +157,8 @@ const splitList = raw => {
 const daysBetween = (d1, d2) => Math.round((new Date(d2) - new Date(d1)) / 86400000);
 const courseFmt = c => (c ? (c.code ? `${c.code} — ${c.name}` : c.name) : "");
 const isTrainingExempt = emp => (emp.role || "").toLowerCase().includes("owner");
+// StartDate still ahead: optional prehire courses only, nothing due, no emails yet.
+const isPreHire = emp => !!(emp.hireDate && emp.hireDate > TODAY);
 const courseMatchesRole = (course, role) => !course.roles || course.roles.length === 0 || course.roles.includes(role);
 const getEmployeePaths = (emp, paths) => paths.filter(p => p.roles.includes("All") || p.roles.includes(emp.role));
 const isVersionStale = (comp, course) =>
@@ -415,7 +417,9 @@ async function runAssignmentScan(token, d) {
       });
   };
 
-  const activeEmps = d.employees.filter(e => e.active && !isTrainingExempt(e) && e.email);
+  // Pre-hires are skipped and NOT logged, so their assignment email goes out on
+  // their start date instead of landing in a mailbox they may not check yet.
+  const activeEmps = d.employees.filter(e => e.active && !isTrainingExempt(e) && e.email && !isPreHire(e));
 
   // First run records current assignments WITHOUT emailing, so nobody gets a
   // blast for training they were already assigned.
@@ -470,7 +474,7 @@ async function runMondayManagerReport(token, d) {
     const issues = [];
 
     for (const emp of reports) {
-      if (isTrainingExempt(emp)) continue;
+      if (isTrainingExempt(emp) || isPreHire(emp)) continue;
       for (const path of getEmployeePaths(emp, d.paths).filter(p => p.required)) {
         const { dueDate, status } = getPathDueStatus(path, emp, d.completions, d.courses);
         if (status === "overdue") issues.push({ emp, type: "overdue", detail: `${path.name} was due ${dueDate}` });
